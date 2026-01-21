@@ -58,14 +58,29 @@
     mutations.forEach((mutation) => {
       mutation.addedNodes.forEach((node) => {
         if (node.nodeType === 1) { // Element node
-          // WhatsApp context menu typically has these characteristics
-          const menu = node.querySelector('[role="application"]') || 
-                      (node.getAttribute && node.getAttribute('role') === 'application');
+          // Check if this is a context menu (span with role="application" containing menu items)
+          let menu = null;
           
-          if (menu || isContextMenu(node)) {
+          if (node.getAttribute && node.getAttribute('role') === 'application') {
+            menu = node;
+          } else if (node.querySelector) {
+            menu = node.querySelector('span[role="application"]');
+          }
+          
+          // Additional check: look for menu structure
+          if (!menu && isContextMenu(node)) {
+            menu = node;
+          }
+          
+          if (menu) {
             contextMenuOpen = true;
-            currentContextMenu = menu || node;
-            console.log('WhatsApp Web Improver: Context menu detected');
+            currentContextMenu = menu;
+            console.log('WhatsApp Web Improver: ✓ Context menu detected!');
+            console.log('Menu element:', menu);
+            
+            // Log available menu items for debugging
+            const items = menu.querySelectorAll('[role="button"], li, div[tabindex]');
+            console.log(`Found ${items.length} menu items:`, Array.from(items).map(i => i.textContent.trim()));
           }
         }
       });
@@ -84,52 +99,52 @@
   function isContextMenu(node) {
     if (!node || !node.querySelector) return false;
     
-    // Look for menu items with specific WhatsApp patterns
-    const hasMenuItems = node.querySelector('[role="button"]') !== null;
-    const hasMenuStructure = node.classList && (
-      node.classList.contains('_3yz-8') || 
-      Array.from(node.classList).some(c => c.includes('menu'))
-    );
+    // Look for menu items - WhatsApp menus typically have multiple list items or buttons
+    const buttons = node.querySelectorAll('[role="button"]');
+    const listItems = node.querySelectorAll('li');
     
-    return hasMenuItems || hasMenuStructure;
+    // If we have multiple menu-like items, it's likely a context menu
+    return buttons.length >= 2 || listItems.length >= 2;
   }
 
   // Find and click a menu item by action
   function clickMenuItemByAction(action) {
     if (!currentContextMenu) {
-      console.log('WhatsApp Web Improver: No context menu found');
+      console.log('❌ WhatsApp Web Improver: No context menu found');
       return false;
     }
 
-    // Find all buttons/menu items in the context menu
-    const menuItems = currentContextMenu.querySelectorAll('[role="button"], li[tabindex], div[role="button"]');
+    // Find all possible menu items
+    const menuItems = currentContextMenu.querySelectorAll('[role="button"], li[tabindex], div[tabindex], li, div[role="button"]');
     
-    console.log(`WhatsApp Web Improver: Found ${menuItems.length} menu items, looking for "${action}"`);
+    console.log(`🔍 WhatsApp Web Improver: Looking for "${action}" action among ${menuItems.length} menu items`);
 
     const keywords = actionKeywords[action] || [];
 
     for (const item of menuItems) {
       const text = item.textContent.toLowerCase().trim();
       const ariaLabel = item.getAttribute('aria-label')?.toLowerCase() || '';
+      const title = item.getAttribute('title')?.toLowerCase() || '';
       
-      // Check if any keyword matches
+      console.log(`  - Checking: "${text.substring(0, 30)}..."`);
+      
+      // Check if any keyword matches in text, aria-label, or title
       for (const keyword of keywords) {
-        if (text.includes(keyword) || ariaLabel.includes(keyword)) {
-          console.log(`WhatsApp Web Improver: ${action} button found, clicking...`);
+        if (text.includes(keyword) || ariaLabel.includes(keyword) || title.includes(keyword)) {
+          console.log(`✓ WhatsApp Web Improver: "${action}" button found! Clicking...`);
           item.click();
           return true;
         }
       }
     }
 
-    console.log(`WhatsApp Web Improver: ${action} button not found (action may not be available for this message)`);
+    console.log(`❌ WhatsApp Web Improver: "${action}" button not found. Available items:`, 
+                Array.from(menuItems).map(i => i.textContent.trim().substring(0, 20)));
     return false;
   }
 
   // Listen for keypress events
   document.addEventListener('keydown', (e) => {
-    if (!contextMenuOpen) return;
-
     // Don't trigger if user is typing in an input field
     if (e.target.tagName === 'INPUT' || 
         e.target.tagName === 'TEXTAREA' || 
@@ -138,11 +153,18 @@
     }
 
     const pressedKey = e.key.toLowerCase();
+    
+    // Log all keypress when menu is open for debugging
+    if (contextMenuOpen) {
+      console.log(`⌨️  WhatsApp Web Improver: Key "${pressedKey}" pressed (menu open: ${contextMenuOpen})`);
+    }
+
+    if (!contextMenuOpen) return;
 
     // Check if the pressed key matches any enabled shortcut
     for (const [action, config] of Object.entries(shortcuts)) {
       if (config.enabled && config.key === pressedKey) {
-        console.log(`WhatsApp Web Improver: "${pressedKey}" key pressed for action "${action}"`);
+        console.log(`🎯 WhatsApp Web Improver: Matched shortcut "${pressedKey}" → "${action}"`);
         
         if (clickMenuItemByAction(action)) {
           e.preventDefault();
