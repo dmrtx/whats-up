@@ -20,7 +20,10 @@ const defaultPerformanceSettings = {
     enabled: false,
     threshold: 1000  // MB
   },
-  showReloadNotification: true
+  showReloadNotification: true,
+  messageNavigation: {
+    enabled: true
+  }
 };
 
 // Load saved settings
@@ -68,6 +71,12 @@ function loadSettings() {
     if (showReloadNotification) {
       showReloadNotification.checked = perfSettings.showReloadNotification !== false;
     }
+    
+    // Message navigation
+    const messageNavigationEnabled = document.getElementById('message-navigation-enabled');
+    if (messageNavigationEnabled) {
+      messageNavigationEnabled.checked = perfSettings.messageNavigation?.enabled !== false;
+    }
   });
 }
 
@@ -109,7 +118,10 @@ function saveSettings() {
       enabled: document.getElementById('memory-monitor-enabled').checked,
       threshold: parseInt(document.getElementById('memory-threshold').value)
     },
-    showReloadNotification: document.getElementById('show-reload-notification').checked
+    showReloadNotification: document.getElementById('show-reload-notification').checked,
+    messageNavigation: {
+      enabled: document.getElementById('message-navigation-enabled').checked
+    }
   };
 
   chrome.storage.sync.set({ 

@@ -12,6 +12,12 @@
   let performanceSettings = {};
   let lastReloadCheck = null;
   let reloadNotificationShown = false;
+  
+  // Message navigation state
+  let messageNavigationEnabled = false;
+  let messageNavigationMode = false;
+  let selectedMessageIndex = -1;
+  let messageElements = [];
 
   // Default shortcuts
   const defaultShortcuts = {
@@ -29,7 +35,8 @@
   const defaultPerformanceSettings = {
     autoReload: { enabled: false, time: '04:00' },
     memoryMonitor: { enabled: false, threshold: 1000 },
-    showReloadNotification: true
+    showReloadNotification: true,
+    messageNavigation: { enabled: true }
   };
 
   // Action keywords in different languages
@@ -222,6 +229,225 @@
     console.log('WhatsApp Web Improver: Performance monitoring started');
   }
 
+  // ===== MESSAGE NAVIGATION =====
+  
+  // Inject styles for message selection
+  function injectNavigationStyles() {
+    if (document.getElementById('wa-improver-nav-styles')) return;
+    
+    const styles = document.createElement('style');
+    styles.id = 'wa-improver-nav-styles';
+    styles.textContent = `
+      .wa-improver-selected-message {
+        outline: 2px solid #25D366 !important;
+        outline-offset: 2px;
+        border-radius: 8px;
+        background-color: rgba(37, 211, 102, 0.1) !important;
+        transition: all 0.15s ease;
+      }
+      
+      .wa-improver-nav-indicator {
+        position: fixed;
+        bottom: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+        color: white;
+        padding: 10px 20px;
+        border-radius: 20px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 13px;
+        z-index: 999998;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        display: flex;
+        align-items: center;
+        gap: 15px;
+      }
+      
+      .wa-improver-nav-indicator kbd {
+        background: rgba(255,255,255,0.2);
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 12px;
+      }
+      
+      .wa-improver-nav-indicator .shortcuts {
+        display: flex;
+        gap: 8px;
+        border-left: 1px solid rgba(255,255,255,0.3);
+        padding-left: 15px;
+        margin-left: 5px;
+      }
+      
+      .wa-improver-nav-indicator .shortcut-hint {
+        opacity: 0.9;
+        font-size: 11px;
+      }
+    `;
+    document.head.appendChild(styles);
+  }
+  
+  // Get all visible message elements
+  function getMessageElements() {
+    // WhatsApp message rows - look for message containers
+    const messages = document.querySelectorAll('[data-id][class*="message"], div[class*="message-out"], div[class*="message-in"], [data-pre-plain-text]');
+    
+    // Filter to get actual message bubbles
+    let msgElements = [];
+    
+    // Try different selectors for message bubbles
+    const possibleSelectors = [
+      '[data-pre-plain-text]',
+      '[class*="focusable-list-item"]',
+      'div[class*="_amk4"]',
+      'div[tabindex="-1"][class*="message"]'
+    ];
+    
+    for (const selector of possibleSelectors) {
+      const found = document.querySelectorAll(selector);
+      if (found.length > 0) {
+        msgElements = Array.from(found);
+        break;
+      }
+    }
+    
+    // Fallback: find message rows in the chat
+    if (msgElements.length === 0) {
+      const chatContainer = document.querySelector('[data-tab="8"]') || 
+                           document.querySelector('[role="application"]')?.closest('div[tabindex]')?.parentElement;
+      if (chatContainer) {
+        // Look for rows that contain message content
+        const rows = chatContainer.querySelectorAll('[role="row"], div[class*="copyable-text"]');
+        msgElements = Array.from(rows).filter(row => {
+          return row.querySelector('[data-pre-plain-text]') || 
+                 row.textContent.trim().length > 0;
+        });
+      }
+    }
+    
+    return msgElements;
+  }
+  
+  // Show navigation indicator
+  function showNavigationIndicator() {
+    if (document.getElementById('wa-improver-nav-indicator')) return;
+    
+    const indicator = document.createElement('div');
+    indicator.id = 'wa-improver-nav-indicator';
+    indicator.className = 'wa-improver-nav-indicator';
+    indicator.innerHTML = `
+      <span>📍 Message Navigation</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+      <span class="shortcuts">
+        <span class="shortcut-hint"><kbd>e</kbd> Edit</span>
+        <span class="shortcut-hint"><kbd>r</kbd> Reply</span>
+        <span class="shortcut-hint"><kbd>d</kbd> Delete</span>
+        <span class="shortcut-hint"><kbd>Esc</kbd> Exit</span>
+      </span>
+    `;
+    document.body.appendChild(indicator);
+  }
+  
+  // Hide navigation indicator
+  function hideNavigationIndicator() {
+    const indicator = document.getElementById('wa-improver-nav-indicator');
+    if (indicator) indicator.remove();
+  }
+  
+  // Highlight selected message
+  function highlightMessage(index) {
+    // Remove previous highlight
+    document.querySelectorAll('.wa-improver-selected-message').forEach(el => {
+      el.classList.remove('wa-improver-selected-message');
+    });
+    
+    if (index >= 0 && index < messageElements.length) {
+      const msg = messageElements[index];
+      msg.classList.add('wa-improver-selected-message');
+      
+      // Scroll into view
+      msg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      
+      console.log(`📍 WhatsApp Web Improver: Selected message ${index + 1}/${messageElements.length}`);
+    }
+  }
+  
+  // Enter message navigation mode
+  function enterNavigationMode() {
+    messageElements = getMessageElements();
+    
+    if (messageElements.length === 0) {
+      console.log('❌ WhatsApp Web Improver: No messages found');
+      return false;
+    }
+    
+    messageNavigationMode = true;
+    selectedMessageIndex = messageElements.length - 1; // Start from last message
+    
+    injectNavigationStyles();
+    showNavigationIndicator();
+    highlightMessage(selectedMessageIndex);
+    
+    console.log(`🎯 WhatsApp Web Improver: Navigation mode ON (${messageElements.length} messages)`);
+    return true;
+  }
+  
+  // Exit message navigation mode
+  function exitNavigationMode() {
+    messageNavigationMode = false;
+    selectedMessageIndex = -1;
+    messageElements = [];
+    
+    // Remove highlight
+    document.querySelectorAll('.wa-improver-selected-message').forEach(el => {
+      el.classList.remove('wa-improver-selected-message');
+    });
+    
+    hideNavigationIndicator();
+    console.log('🎯 WhatsApp Web Improver: Navigation mode OFF');
+  }
+  
+  // Trigger action on selected message
+  function triggerActionOnSelectedMessage(action) {
+    if (selectedMessageIndex < 0 || selectedMessageIndex >= messageElements.length) {
+      return false;
+    }
+    
+    const msg = messageElements[selectedMessageIndex];
+    
+    // Find the message bubble/container to right-click on
+    const targetElement = msg.querySelector('[data-pre-plain-text]') || 
+                          msg.querySelector('[class*="copyable-text"]') ||
+                          msg;
+    
+    console.log(`🎯 WhatsApp Web Improver: Triggering "${action}" on selected message`);
+    
+    // Create and dispatch right-click event to open context menu
+    const rightClickEvent = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      button: 2,
+      clientX: targetElement.getBoundingClientRect().x + 50,
+      clientY: targetElement.getBoundingClientRect().y + 20
+    });
+    
+    targetElement.dispatchEvent(rightClickEvent);
+    
+    // Wait for context menu to appear, then trigger action
+    setTimeout(() => {
+      if (contextMenuOpen && currentContextMenu) {
+        clickMenuItemByAction(action);
+        exitNavigationMode();
+      } else {
+        console.log('❌ Context menu did not open');
+      }
+    }, 150);
+    
+    return true;
+  }
+
   // Detect when context menu opens
   const observer = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
@@ -314,26 +540,94 @@
 
   // Listen for keypress events
   document.addEventListener('keydown', (e) => {
-    // Don't trigger if user is typing in an input field
-    if (e.target.tagName === 'INPUT' || 
-        e.target.tagName === 'TEXTAREA' || 
-        e.target.contentEditable === 'true') {
+    const pressedKey = e.key;
+    const pressedKeyLower = pressedKey.toLowerCase();
+    const isTyping = e.target.tagName === 'INPUT' || 
+                     e.target.tagName === 'TEXTAREA' || 
+                     e.target.contentEditable === 'true';
+
+    // ===== MESSAGE NAVIGATION HANDLING =====
+    const navEnabled = performanceSettings.messageNavigation?.enabled !== false;
+    
+    // Arrow Up to enter navigation mode (even while typing)
+    if (navEnabled && pressedKey === 'ArrowUp' && !messageNavigationMode && !contextMenuOpen) {
+      // Check if we're in the message input and it's empty, or not typing at all
+      const messageInput = document.querySelector('[data-tab="10"]') || 
+                          document.querySelector('[contenteditable="true"][data-tab]');
+      const isInputEmpty = !messageInput || messageInput.textContent.trim() === '';
+      
+      if (isInputEmpty || !isTyping) {
+        e.preventDefault();
+        e.stopPropagation();
+        enterNavigationMode();
+        return;
+      }
+    }
+    
+    // Handle navigation mode keys
+    if (messageNavigationMode) {
+      // Escape to exit
+      if (pressedKey === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        exitNavigationMode();
+        return;
+      }
+      
+      // Arrow Up - previous message
+      if (pressedKey === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (selectedMessageIndex > 0) {
+          selectedMessageIndex--;
+          highlightMessage(selectedMessageIndex);
+        }
+        return;
+      }
+      
+      // Arrow Down - next message
+      if (pressedKey === 'ArrowDown') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (selectedMessageIndex < messageElements.length - 1) {
+          selectedMessageIndex++;
+          highlightMessage(selectedMessageIndex);
+        } else {
+          // Exit navigation if we go past the last message
+          exitNavigationMode();
+        }
+        return;
+      }
+      
+      // Check for action shortcuts
+      for (const [action, config] of Object.entries(shortcuts)) {
+        if (config.enabled && config.key === pressedKeyLower) {
+          e.preventDefault();
+          e.stopPropagation();
+          triggerActionOnSelectedMessage(action);
+          return;
+        }
+      }
+    }
+
+    // ===== CONTEXT MENU HANDLING =====
+    
+    // Don't trigger context menu shortcuts if user is typing
+    if (isTyping) {
       return;
     }
 
-    const pressedKey = e.key.toLowerCase();
-    
     // Log all keypress when menu is open for debugging
     if (contextMenuOpen) {
-      console.log(`⌨️  WhatsApp Web Improver: Key "${pressedKey}" pressed (menu open: ${contextMenuOpen})`);
+      console.log(`⌨️  WhatsApp Web Improver: Key "${pressedKeyLower}" pressed (menu open: ${contextMenuOpen})`);
     }
 
     if (!contextMenuOpen) return;
 
     // Check if the pressed key matches any enabled shortcut
     for (const [action, config] of Object.entries(shortcuts)) {
-      if (config.enabled && config.key === pressedKey) {
-        console.log(`🎯 WhatsApp Web Improver: Matched shortcut "${pressedKey}" → "${action}"`);
+      if (config.enabled && config.key === pressedKeyLower) {
+        console.log(`🎯 WhatsApp Web Improver: Matched shortcut "${pressedKeyLower}" → "${action}"`);
         
         if (clickMenuItemByAction(action)) {
           e.preventDefault();
@@ -341,6 +635,13 @@
         }
         break;
       }
+    }
+  }, true);
+
+  // Also exit navigation mode when clicking anywhere
+  document.addEventListener('click', () => {
+    if (messageNavigationMode) {
+      exitNavigationMode();
     }
   }, true);
 

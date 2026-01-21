@@ -256,6 +256,23 @@ footer {
   border-top: 2px solid #f0f0f0;
 }
 
+/* Highlight feature */
+.highlight-feature {
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%) !important;
+  border: 2px solid #25D366;
+}
+
+/* Keyboard hints */
+.info-box kbd {
+  background: #333;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 12px;
+  margin: 0 2px;
+}
+
 .performance-section h2 {
   color: #333;
   font-size: 20px;
