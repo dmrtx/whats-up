@@ -18,6 +18,7 @@
   let messageNavigationMode = false;
   let selectedMessageIndex = -1;
   let messageElements = [];
+  let navigationModeEnteredAt = 0; // Timestamp to prevent immediate actions
 
   // Default shortcuts
   const defaultShortcuts = {
@@ -444,6 +445,7 @@
     }
     
     messageNavigationMode = true;
+    navigationModeEnteredAt = Date.now(); // Record entry time
     selectedMessageIndex = messageElements.length - 1; // Start from last message
     
     injectNavigationStyles();
@@ -610,19 +612,13 @@
     // ===== MESSAGE NAVIGATION HANDLING =====
     const navEnabled = performanceSettings.messageNavigation?.enabled !== false;
     
-    // Arrow Up to enter navigation mode (even while typing)
-    if (navEnabled && pressedKey === 'ArrowUp' && !messageNavigationMode && !contextMenuOpen) {
-      // Check if we're in the message input and it's empty, or not typing at all
-      const messageInput = document.querySelector('[data-tab="10"]') || 
-                          document.querySelector('[contenteditable="true"][data-tab]');
-      const isInputEmpty = !messageInput || messageInput.textContent.trim() === '';
-      
-      if (isInputEmpty || !isTyping) {
-        e.preventDefault();
-        e.stopPropagation();
-        enterNavigationMode();
-        return;
-      }
+    // Arrow Up to enter navigation mode (only when NOT typing)
+    if (navEnabled && pressedKey === 'ArrowUp' && !messageNavigationMode && !contextMenuOpen && !isTyping) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      enterNavigationMode();
+      return;
     }
     
     // Handle navigation mode keys
@@ -660,13 +656,17 @@
         return;
       }
       
-      // Check for action shortcuts
-      for (const [action, config] of Object.entries(shortcuts)) {
-        if (config.enabled && config.key === pressedKeyLower) {
-          e.preventDefault();
-          e.stopPropagation();
-          triggerActionOnSelectedMessage(action);
-          return;
+      // Check for action shortcuts (only after a short delay to prevent accidental triggers)
+      const timeSinceEntry = Date.now() - navigationModeEnteredAt;
+      if (timeSinceEntry > 200) { // 200ms delay before allowing actions
+        for (const [action, config] of Object.entries(shortcuts)) {
+          if (config.enabled && config.key === pressedKeyLower) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            triggerActionOnSelectedMessage(action);
+            return;
+          }
         }
       }
     }
