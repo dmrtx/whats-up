@@ -239,50 +239,93 @@
     styles.id = 'wa-improver-nav-styles';
     styles.textContent = `
       .wa-improver-selected-message {
-        outline: 2px solid #25D366 !important;
-        outline-offset: 2px;
-        border-radius: 8px;
-        background-color: rgba(37, 211, 102, 0.1) !important;
+        position: relative;
+        outline: 3px solid #25D366 !important;
+        outline-offset: 4px;
+        border-radius: 10px;
+        background-color: rgba(37, 211, 102, 0.15) !important;
+        box-shadow: 0 0 20px rgba(37, 211, 102, 0.4) !important;
         transition: all 0.15s ease;
+        z-index: 100;
+      }
+      
+      .wa-improver-selected-message::before {
+        content: '▶';
+        position: absolute;
+        left: -30px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #25D366;
+        font-size: 18px;
+        animation: wa-pulse 1s ease-in-out infinite;
+      }
+      
+      @keyframes wa-pulse {
+        0%, 100% { opacity: 1; transform: translateY(-50%) scale(1); }
+        50% { opacity: 0.7; transform: translateY(-50%) scale(1.2); }
       }
       
       .wa-improver-nav-indicator {
         position: fixed;
-        bottom: 80px;
+        bottom: 100px;
         left: 50%;
         transform: translateX(-50%);
         background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
         color: white;
-        padding: 10px 20px;
-        border-radius: 20px;
+        padding: 12px 24px;
+        border-radius: 25px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 13px;
+        font-size: 14px;
         z-index: 999998;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
         display: flex;
         align-items: center;
-        gap: 15px;
+        gap: 20px;
+        animation: wa-slideUp 0.3s ease;
+      }
+      
+      @keyframes wa-slideUp {
+        from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+        to { opacity: 1; transform: translateX(-50%) translateY(0); }
       }
       
       .wa-improver-nav-indicator kbd {
-        background: rgba(255,255,255,0.2);
-        padding: 3px 8px;
-        border-radius: 4px;
+        background: rgba(255,255,255,0.25);
+        padding: 4px 10px;
+        border-radius: 5px;
         font-family: monospace;
-        font-size: 12px;
+        font-size: 13px;
+        font-weight: bold;
+        border: 1px solid rgba(255,255,255,0.3);
+      }
+      
+      .wa-improver-nav-indicator .nav-section {
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
       
       .wa-improver-nav-indicator .shortcuts {
         display: flex;
-        gap: 8px;
-        border-left: 1px solid rgba(255,255,255,0.3);
-        padding-left: 15px;
-        margin-left: 5px;
+        gap: 12px;
+        border-left: 2px solid rgba(255,255,255,0.3);
+        padding-left: 20px;
+        margin-left: 10px;
       }
       
       .wa-improver-nav-indicator .shortcut-hint {
-        opacity: 0.9;
-        font-size: 11px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+      }
+      
+      .wa-improver-nav-indicator .msg-counter {
+        background: rgba(0,0,0,0.2);
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: bold;
       }
     `;
     document.head.appendChild(styles);
@@ -331,22 +374,37 @@
   
   // Show navigation indicator
   function showNavigationIndicator() {
-    if (document.getElementById('wa-improver-nav-indicator')) return;
+    let indicator = document.getElementById('wa-improver-nav-indicator');
     
-    const indicator = document.createElement('div');
-    indicator.id = 'wa-improver-nav-indicator';
-    indicator.className = 'wa-improver-nav-indicator';
+    if (!indicator) {
+      indicator = document.createElement('div');
+      indicator.id = 'wa-improver-nav-indicator';
+      indicator.className = 'wa-improver-nav-indicator';
+      document.body.appendChild(indicator);
+    }
+    
+    updateNavigationIndicator();
+  }
+  
+  // Update the indicator with current position
+  function updateNavigationIndicator() {
+    const indicator = document.getElementById('wa-improver-nav-indicator');
+    if (!indicator) return;
+    
+    const current = selectedMessageIndex + 1;
+    const total = messageElements.length;
+    
     indicator.innerHTML = `
-      <span>📍 Message Navigation</span>
-      <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+      <span class="nav-section">📍 <strong>Message Selected</strong></span>
+      <span class="msg-counter">${current} / ${total}</span>
+      <span class="nav-section"><kbd>↑</kbd><kbd>↓</kbd></span>
       <span class="shortcuts">
-        <span class="shortcut-hint"><kbd>e</kbd> Edit</span>
-        <span class="shortcut-hint"><kbd>r</kbd> Reply</span>
-        <span class="shortcut-hint"><kbd>d</kbd> Delete</span>
+        <span class="shortcut-hint"><kbd>${shortcuts.edit?.key || 'e'}</kbd> Edit</span>
+        <span class="shortcut-hint"><kbd>${shortcuts.reply?.key || 'r'}</kbd> Reply</span>
+        <span class="shortcut-hint"><kbd>${shortcuts.delete?.key || 'd'}</kbd> Delete</span>
         <span class="shortcut-hint"><kbd>Esc</kbd> Exit</span>
       </span>
     `;
-    document.body.appendChild(indicator);
   }
   
   // Hide navigation indicator
@@ -368,6 +426,9 @@
       
       // Scroll into view
       msg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      
+      // Update the indicator counter
+      updateNavigationIndicator();
       
       console.log(`📍 WhatsApp Web Improver: Selected message ${index + 1}/${messageElements.length}`);
     }
