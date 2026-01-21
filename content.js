@@ -9,6 +9,9 @@
   let contextMenuOpen = false;
   let currentContextMenu = null;
   let shortcuts = {};
+  let performanceSettings = {};
+  let lastReloadCheck = null;
+  let reloadNotificationShown = false;
 
   // Default shortcuts
   const defaultShortcuts = {
@@ -20,6 +23,13 @@
     info: { key: 'i', enabled: true },
     copy: { key: 'c', enabled: true },
     pin: { key: 'p', enabled: true }
+  };
+
+  // Default performance settings
+  const defaultPerformanceSettings = {
+    autoReload: { enabled: false, time: '04:00' },
+    memoryMonitor: { enabled: false, threshold: 1000 },
+    showReloadNotification: true
   };
 
   // Action keywords in different languages
@@ -34,24 +44,183 @@
     pin: ['pin', 'fijar', 'épingler', 'anheften', 'fissa']
   };
 
-  // Load shortcuts from storage
-  function loadShortcuts() {
-    chrome.storage.sync.get('shortcuts', (data) => {
+  // Load settings from storage
+  function loadSettings() {
+    chrome.storage.sync.get(['shortcuts', 'performance'], (data) => {
       shortcuts = data.shortcuts || defaultShortcuts;
-      console.log('WhatsApp Web Improver: Shortcuts loaded', shortcuts);
+      performanceSettings = data.performance || defaultPerformanceSettings;
+      console.log('WhatsApp Web Improver: Settings loaded', { shortcuts, performanceSettings });
+      
+      // Start performance monitoring
+      startPerformanceMonitoring();
     });
   }
 
   // Listen for storage changes
   chrome.storage.onChanged.addListener((changes, namespace) => {
-    if (namespace === 'sync' && changes.shortcuts) {
-      shortcuts = changes.shortcuts.newValue;
-      console.log('WhatsApp Web Improver: Shortcuts updated', shortcuts);
+    if (namespace === 'sync') {
+      if (changes.shortcuts) {
+        shortcuts = changes.shortcuts.newValue;
+        console.log('WhatsApp Web Improver: Shortcuts updated', shortcuts);
+      }
+      if (changes.performance) {
+        performanceSettings = changes.performance.newValue;
+        console.log('WhatsApp Web Improver: Performance settings updated', performanceSettings);
+      }
     }
   });
 
-  // Initialize shortcuts
-  loadShortcuts();
+  // Initialize settings
+  loadSettings();
+
+  // ===== PERFORMANCE MONITORING =====
+
+  // Show reload notification banner
+  function showReloadNotification(reason) {
+    if (reloadNotificationShown) return;
+    reloadNotificationShown = true;
+
+    const banner = document.createElement('div');
+    banner.id = 'wa-improver-reload-banner';
+    banner.innerHTML = `
+      <style>
+        #wa-improver-reload-banner {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+          color: white;
+          padding: 15px 20px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          z-index: 999999;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        #wa-improver-reload-banner .message {
+          flex: 1;
+        }
+        #wa-improver-reload-banner .message strong {
+          display: block;
+          margin-bottom: 3px;
+        }
+        #wa-improver-reload-banner .buttons {
+          display: flex;
+          gap: 10px;
+        }
+        #wa-improver-reload-banner button {
+          padding: 8px 20px;
+          border: none;
+          border-radius: 5px;
+          cursor: pointer;
+          font-weight: bold;
+          transition: transform 0.2s;
+        }
+        #wa-improver-reload-banner button:hover {
+          transform: scale(1.05);
+        }
+        #wa-improver-reload-banner .reload-btn {
+          background: white;
+          color: #128C7E;
+        }
+        #wa-improver-reload-banner .dismiss-btn {
+          background: rgba(255,255,255,0.2);
+          color: white;
+        }
+      </style>
+      <div class="message">
+        <strong>⚡ WhatsApp Web Improver</strong>
+        <span>${reason}</span>
+      </div>
+      <div class="buttons">
+        <button class="reload-btn" id="wa-reload-now">Reload Now</button>
+        <button class="dismiss-btn" id="wa-reload-later">Later</button>
+      </div>
+    `;
+
+    document.body.appendChild(banner);
+
+    document.getElementById('wa-reload-now').addEventListener('click', () => {
+      location.reload();
+    });
+
+    document.getElementById('wa-reload-later').addEventListener('click', () => {
+      banner.remove();
+      reloadNotificationShown = false;
+      // Don't ask again for 1 hour
+      setTimeout(() => { reloadNotificationShown = false; }, 60 * 60 * 1000);
+    });
+  }
+
+  // Check memory usage
+  function checkMemoryUsage() {
+    if (!performanceSettings.memoryMonitor?.enabled) return;
+    
+    if (performance && performance.memory) {
+      const usedMB = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
+      const threshold = performanceSettings.memoryMonitor.threshold || 1000;
+      
+      console.log(`📊 WhatsApp Web Improver: Memory usage: ${usedMB} MB (threshold: ${threshold} MB)`);
+      
+      if (usedMB > threshold) {
+        console.log('⚠️ WhatsApp Web Improver: Memory threshold exceeded!');
+        
+        if (performanceSettings.showReloadNotification) {
+          showReloadNotification(`High memory usage detected (${usedMB} MB). Reload recommended for better performance.`);
+        } else {
+          location.reload();
+        }
+      }
+    }
+  }
+
+  // Check if it's time for scheduled reload
+  function checkScheduledReload() {
+    if (!performanceSettings.autoReload?.enabled) return;
+    
+    const now = new Date();
+    const [hours, minutes] = (performanceSettings.autoReload.time || '04:00').split(':').map(Number);
+    
+    const targetTime = new Date();
+    targetTime.setHours(hours, minutes, 0, 0);
+    
+    // Check if we're within 1 minute of the target time
+    const diffMs = Math.abs(now - targetTime);
+    const diffMins = diffMs / (1000 * 60);
+    
+    // Also check if we already reloaded today
+    const todayKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+    
+    if (diffMins < 1 && lastReloadCheck !== todayKey) {
+      lastReloadCheck = todayKey;
+      console.log('🕐 WhatsApp Web Improver: Scheduled reload time reached!');
+      
+      if (performanceSettings.showReloadNotification) {
+        showReloadNotification('Scheduled daily reload to maintain performance.');
+      } else {
+        location.reload();
+      }
+    }
+  }
+
+  // Start performance monitoring
+  function startPerformanceMonitoring() {
+    // Check memory every 5 minutes
+    setInterval(checkMemoryUsage, 5 * 60 * 1000);
+    
+    // Check scheduled reload every minute
+    setInterval(checkScheduledReload, 60 * 1000);
+    
+    // Initial check after 1 minute
+    setTimeout(() => {
+      checkMemoryUsage();
+      checkScheduledReload();
+    }, 60 * 1000);
+    
+    console.log('WhatsApp Web Improver: Performance monitoring started');
+  }
 
   // Detect when context menu opens
   const observer = new MutationObserver((mutations) => {

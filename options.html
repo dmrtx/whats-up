@@ -134,6 +134,69 @@
         </div>
       </div>
 
+      <div class="performance-section">
+        <h2>⚡ Performance</h2>
+        
+        <div class="shortcut-item">
+          <div class="shortcut-info">
+            <label for="auto-reload-enabled">Auto Reload (Daily)</label>
+            <span class="description">Automatically reload WhatsApp Web once per day to keep it fast</span>
+          </div>
+          <div class="shortcut-input">
+            <input type="time" id="reload-time" value="04:00">
+            <label class="toggle">
+              <input type="checkbox" id="auto-reload-enabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="shortcut-item">
+          <div class="shortcut-info">
+            <label for="memory-monitor-enabled">Memory Monitor</label>
+            <span class="description">Auto-reload when memory usage exceeds threshold</span>
+          </div>
+          <div class="shortcut-input">
+            <select id="memory-threshold">
+              <option value="500">500 MB</option>
+              <option value="750">750 MB</option>
+              <option value="1000" selected>1 GB</option>
+              <option value="1500">1.5 GB</option>
+              <option value="2000">2 GB</option>
+            </select>
+            <label class="toggle">
+              <input type="checkbox" id="memory-monitor-enabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="shortcut-item memory-display" id="memory-status" style="display: none;">
+          <div class="shortcut-info">
+            <label>Current Memory Usage</label>
+            <span class="description" id="memory-value">Checking...</span>
+          </div>
+          <div class="shortcut-input">
+            <div class="memory-bar">
+              <div class="memory-bar-fill" id="memory-bar-fill"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="shortcut-item">
+          <div class="shortcut-info">
+            <label for="show-reload-notification">Show Notification Before Reload</label>
+            <span class="description">Ask for confirmation before auto-reloading</span>
+          </div>
+          <div class="shortcut-input">
+            <label class="toggle">
+              <input type="checkbox" id="show-reload-notification" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
       <div class="button-group">
         <button id="save-btn" class="btn btn-primary">Save Settings</button>
         <button id="reset-btn" class="btn btn-secondary">Reset to Defaults</button>

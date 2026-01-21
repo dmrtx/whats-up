@@ -249,6 +249,91 @@ footer {
   border-top: 1px solid #eee;
 }
 
+/* Performance Section */
+.performance-section {
+  margin-top: 30px;
+  padding-top: 20px;
+  border-top: 2px solid #f0f0f0;
+}
+
+.performance-section h2 {
+  color: #333;
+  font-size: 20px;
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid #f0f0f0;
+}
+
+/* Time Input */
+input[type="time"] {
+  padding: 10px 12px;
+  font-size: 14px;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+}
+
+input[type="time"]:focus {
+  outline: none;
+  border-color: #25D366;
+}
+
+input[type="time"]:disabled {
+  background: #f0f0f0;
+  cursor: not-allowed;
+}
+
+/* Select */
+select {
+  padding: 10px 12px;
+  font-size: 14px;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  min-width: 100px;
+}
+
+select:focus {
+  outline: none;
+  border-color: #25D366;
+}
+
+select:disabled {
+  background: #f0f0f0;
+  cursor: not-allowed;
+}
+
+/* Memory Bar */
+.memory-bar {
+  width: 120px;
+  height: 20px;
+  background: #e0e0e0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.memory-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #25D366, #128C7E);
+  border-radius: 10px;
+  transition: width 0.5s ease, background 0.5s ease;
+  width: 0%;
+}
+
+.memory-bar-fill.warning {
+  background: linear-gradient(90deg, #ffc107, #ff9800);
+}
+
+.memory-bar-fill.danger {
+  background: linear-gradient(90deg, #ff5722, #f44336);
+}
+
+.memory-display {
+  background: #f0f8f0 !important;
+}
+
 /* Responsive */
 @media (max-width: 600px) {
   .shortcut-item {

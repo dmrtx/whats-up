@@ -11,11 +11,25 @@ const defaultSettings = {
   pin: { key: 'p', enabled: true }
 };
 
+const defaultPerformanceSettings = {
+  autoReload: {
+    enabled: false,
+    time: '04:00'
+  },
+  memoryMonitor: {
+    enabled: false,
+    threshold: 1000  // MB
+  },
+  showReloadNotification: true
+};
+
 // Load saved settings
 function loadSettings() {
-  chrome.storage.sync.get('shortcuts', (data) => {
+  chrome.storage.sync.get(['shortcuts', 'performance'], (data) => {
     const settings = data.shortcuts || defaultSettings;
+    const perfSettings = data.performance || defaultPerformanceSettings;
     
+    // Load shortcuts
     Object.keys(settings).forEach(action => {
       const keyInput = document.getElementById(`${action}-key`);
       const enabledCheckbox = document.getElementById(`${action}-enabled`);
@@ -26,6 +40,34 @@ function loadSettings() {
         keyInput.disabled = !settings[action].enabled;
       }
     });
+    
+    // Load performance settings
+    const autoReloadEnabled = document.getElementById('auto-reload-enabled');
+    const reloadTime = document.getElementById('reload-time');
+    const memoryMonitorEnabled = document.getElementById('memory-monitor-enabled');
+    const memoryThreshold = document.getElementById('memory-threshold');
+    const showReloadNotification = document.getElementById('show-reload-notification');
+    
+    if (autoReloadEnabled) {
+      autoReloadEnabled.checked = perfSettings.autoReload?.enabled || false;
+      reloadTime.value = perfSettings.autoReload?.time || '04:00';
+      reloadTime.disabled = !autoReloadEnabled.checked;
+    }
+    
+    if (memoryMonitorEnabled) {
+      memoryMonitorEnabled.checked = perfSettings.memoryMonitor?.enabled || false;
+      memoryThreshold.value = perfSettings.memoryMonitor?.threshold || 1000;
+      memoryThreshold.disabled = !memoryMonitorEnabled.checked;
+      
+      // Show memory status if enabled
+      if (memoryMonitorEnabled.checked) {
+        document.getElementById('memory-status').style.display = 'flex';
+      }
+    }
+    
+    if (showReloadNotification) {
+      showReloadNotification.checked = perfSettings.showReloadNotification !== false;
+    }
   });
 }
 
@@ -57,14 +99,33 @@ function saveSettings() {
     return;
   }
 
-  chrome.storage.sync.set({ shortcuts: settings }, () => {
+  // Performance settings
+  const performanceSettings = {
+    autoReload: {
+      enabled: document.getElementById('auto-reload-enabled').checked,
+      time: document.getElementById('reload-time').value
+    },
+    memoryMonitor: {
+      enabled: document.getElementById('memory-monitor-enabled').checked,
+      threshold: parseInt(document.getElementById('memory-threshold').value)
+    },
+    showReloadNotification: document.getElementById('show-reload-notification').checked
+  };
+
+  chrome.storage.sync.set({ 
+    shortcuts: settings,
+    performance: performanceSettings
+  }, () => {
     showStatus('success', 'Settings saved successfully! ✓');
   });
 }
 
 // Reset to defaults
 function resetSettings() {
-  chrome.storage.sync.set({ shortcuts: defaultSettings }, () => {
+  chrome.storage.sync.set({ 
+    shortcuts: defaultSettings,
+    performance: defaultPerformanceSettings
+  }, () => {
     loadSettings();
     showStatus('success', 'Settings reset to defaults! ✓');
   });
@@ -120,11 +181,71 @@ function setupKeyInputListeners() {
   });
 }
 
+// Setup performance toggle listeners
+function setupPerformanceListeners() {
+  const autoReloadEnabled = document.getElementById('auto-reload-enabled');
+  const reloadTime = document.getElementById('reload-time');
+  const memoryMonitorEnabled = document.getElementById('memory-monitor-enabled');
+  const memoryThreshold = document.getElementById('memory-threshold');
+  const memoryStatus = document.getElementById('memory-status');
+  
+  if (autoReloadEnabled && reloadTime) {
+    autoReloadEnabled.addEventListener('change', () => {
+      reloadTime.disabled = !autoReloadEnabled.checked;
+    });
+  }
+  
+  if (memoryMonitorEnabled && memoryThreshold) {
+    memoryMonitorEnabled.addEventListener('change', () => {
+      memoryThreshold.disabled = !memoryMonitorEnabled.checked;
+      memoryStatus.style.display = memoryMonitorEnabled.checked ? 'flex' : 'none';
+    });
+  }
+}
+
+// Check current memory (from WhatsApp tab if possible)
+function checkMemoryStatus() {
+  // Note: This shows estimated memory from the options page itself
+  // The actual monitoring happens in the content script
+  if (performance && performance.memory) {
+    const usedMB = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
+    const totalMB = Math.round(performance.memory.jsHeapSizeLimit / (1024 * 1024));
+    const percentage = Math.round((usedMB / totalMB) * 100);
+    
+    const memoryValue = document.getElementById('memory-value');
+    const memoryBarFill = document.getElementById('memory-bar-fill');
+    
+    if (memoryValue) {
+      memoryValue.textContent = `${usedMB} MB used (options page)`;
+    }
+    
+    if (memoryBarFill) {
+      memoryBarFill.style.width = `${Math.min(percentage, 100)}%`;
+      memoryBarFill.className = 'memory-bar-fill';
+      if (percentage > 80) {
+        memoryBarFill.classList.add('danger');
+      } else if (percentage > 60) {
+        memoryBarFill.classList.add('warning');
+      }
+    }
+  } else {
+    const memoryValue = document.getElementById('memory-value');
+    if (memoryValue) {
+      memoryValue.textContent = 'Memory API not available in this browser';
+    }
+  }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   setupToggleListeners();
   setupKeyInputListeners();
+  setupPerformanceListeners();
+  
+  // Check memory periodically
+  checkMemoryStatus();
+  setInterval(checkMemoryStatus, 5000);
   
   document.getElementById('save-btn').addEventListener('click', saveSettings);
   document.getElementById('reset-btn').addEventListener('click', resetSettings);
