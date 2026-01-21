@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "WhatsApp Web Improver",
+  "version": "1.0.0",
+  "description": "Add keyboard shortcuts to WhatsApp Web - Configurable shortcuts for edit, delete, reply, and more",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "options_page": "options.html",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
