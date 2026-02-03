@@ -19,6 +19,12 @@
   let selectedMessageIndex = -1;
   let messageElements = [];
   let navigationModeEnteredAt = 0; // Timestamp to prevent immediate actions
+  
+  // Status + memory reporting (shared with popup/options)
+  const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
+  const LAST_ACTIVE_KEY = 'waImproverLastSeen';
+  const MEMORY_REPORT_INTERVAL_MS = 10000;
+  let lastMemoryReportAt = 0;
 
   // Default shortcuts
   const defaultShortcuts = {
@@ -82,6 +88,54 @@
   loadSettings();
 
   // ===== PERFORMANCE MONITORING =====
+  
+  function markExtensionActive() {
+    chrome.storage.local.set({ [LAST_ACTIVE_KEY]: Date.now() });
+  }
+  
+  function getMemorySnapshot() {
+    const timestamp = Date.now();
+    
+    if (performance && performance.memory) {
+      const usedMB = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
+      const totalMB = Math.round(performance.memory.jsHeapSizeLimit / (1024 * 1024));
+      const percentage = totalMB > 0 ? Math.round((usedMB / totalMB) * 100) : 0;
+      
+      return {
+        available: true,
+        usedMB,
+        totalMB,
+        percentage,
+        timestamp,
+        source: 'content'
+      };
+    }
+    
+    return {
+      available: false,
+      reason: 'Memory API not available',
+      timestamp,
+      source: 'content'
+    };
+  }
+  
+  function reportMemorySnapshot(force = false) {
+    const now = Date.now();
+    if (!force && now - lastMemoryReportAt < MEMORY_REPORT_INTERVAL_MS) return;
+    
+    lastMemoryReportAt = now;
+    chrome.storage.local.set({ [MEMORY_STATUS_KEY]: getMemorySnapshot() });
+  }
+  
+  function startHeartbeat() {
+    markExtensionActive();
+    reportMemorySnapshot(true);
+    
+    setInterval(() => {
+      markExtensionActive();
+      reportMemorySnapshot();
+    }, MEMORY_REPORT_INTERVAL_MS);
+  }
 
   // Show reload notification banner
   function showReloadNotification(reason) {
@@ -215,6 +269,9 @@
 
   // Start performance monitoring
   function startPerformanceMonitoring() {
+    // Heartbeat + memory snapshot (low frequency to keep overhead minimal)
+    startHeartbeat();
+    
     // Check memory every 5 minutes
     setInterval(checkMemoryUsage, 5 * 60 * 1000);
     
@@ -396,13 +453,13 @@
     const total = messageElements.length;
     
     indicator.innerHTML = `
-      <span class="nav-section">📍 <strong>Message Selected</strong></span>
-      <span class="msg-counter">${current} / ${total}</span>
-      <span class="nav-section"><kbd>↑</kbd><kbd>↓</kbd></span>
+      <span class="nav-section">📍 <strong>Message ${current} of ${total}</strong></span>
+      <span class="nav-section"><kbd>↑</kbd><kbd>↓</kbd> Move</span>
       <span class="shortcuts">
         <span class="shortcut-hint"><kbd>${shortcuts.edit?.key || 'e'}</kbd> Edit</span>
         <span class="shortcut-hint"><kbd>${shortcuts.reply?.key || 'r'}</kbd> Reply</span>
-        <span class="shortcut-hint"><kbd>${shortcuts.delete?.key || 'd'}</kbd> Delete</span>
+        <span class="shortcut-hint"><kbd>${shortcuts.delete?.key || 'd'}</kbd> Del</span>
+        <span class="shortcut-hint"><kbd>${shortcuts.star?.key || 's'}</kbd> Star</span>
         <span class="shortcut-hint"><kbd>Esc</kbd> Exit</span>
       </span>
     `;
@@ -473,7 +530,10 @@
   
   // Trigger action on selected message
   function triggerActionOnSelectedMessage(action) {
+    console.log(`🎯 triggerActionOnSelectedMessage called with action: "${action}"`);
+    
     if (selectedMessageIndex < 0 || selectedMessageIndex >= messageElements.length) {
+      console.log('❌ Invalid message index');
       return false;
     }
     
@@ -484,7 +544,7 @@
                           msg.querySelector('[class*="copyable-text"]') ||
                           msg;
     
-    console.log(`🎯 WhatsApp Web Improver: Triggering "${action}" on selected message`);
+    console.log(`🎯 WhatsApp Web Improver: Triggering "${action}" on selected message`, targetElement);
     
     // Create and dispatch right-click event to open context menu
     const rightClickEvent = new MouseEvent('contextmenu', {
@@ -499,18 +559,120 @@
     targetElement.dispatchEvent(rightClickEvent);
     
     // Wait for context menu to appear, then trigger action
-    setTimeout(() => {
-      if (contextMenuOpen && currentContextMenu) {
-        clickMenuItemByAction(action);
-        exitNavigationMode();
+    waitForContextMenu((menu) => {
+      if (menu) {
+        clickMenuItemByAction(action, menu);
       } else {
         console.log('❌ Context menu did not open');
       }
-    }, 150);
+      exitNavigationMode();
+    });
     
     return true;
   }
-
+  
+  function isElementVisible(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  
+  function isMenuSizeReasonable(el) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    
+    const viewportArea = (window.innerWidth || 1) * (window.innerHeight || 1);
+    const area = rect.width * rect.height;
+    
+    // Ignore huge containers (like the full app shell)
+    if (area > viewportArea * 0.7) return false;
+    return true;
+  }
+  
+  function getMenuItemsForNode(node) {
+    return node.querySelectorAll('[role="button"], [role="menuitem"], li[tabindex], div[tabindex], li');
+  }
+  
+  function findContextMenu() {
+    const selectors = [
+      '[role="menu"]',
+      'div[role="dialog"] [role="menu"]',
+      'ul[role="menu"]',
+      'div[role="presentation"] ul',
+      'span[role="application"]',
+      'div[role="application"]'
+    ];
+    
+    for (const selector of selectors) {
+      const candidates = document.querySelectorAll(selector);
+      for (const menu of candidates) {
+        if (!isElementVisible(menu) || !isMenuSizeReasonable(menu)) continue;
+        const items = getMenuItemsForNode(menu);
+        if (items.length >= 2) {
+          return menu;
+        }
+      }
+    }
+    
+    // Fallback: find a small container with multiple visible menu-like items
+    const visibleItems = Array.from(document.querySelectorAll('[role="button"], [role="menuitem"], li[tabindex], div[tabindex]'))
+      .filter(isElementVisible);
+    
+    const containerCounts = new Map();
+    for (const item of visibleItems) {
+      const container = item.closest('[role="menu"], [role="dialog"], ul, div, span');
+      if (!container) continue;
+      const count = containerCounts.get(container) || 0;
+      containerCounts.set(container, count + 1);
+    }
+    
+    for (const [container, count] of containerCounts.entries()) {
+      if (count >= 2 && isElementVisible(container) && isMenuSizeReasonable(container)) {
+        return container;
+      }
+    }
+    
+    return null;
+  }
+  
+  function ensureContextMenuOpen() {
+    if (currentContextMenu && isElementVisible(currentContextMenu)) {
+      contextMenuOpen = true;
+      return true;
+    }
+    
+    const menu = findContextMenu();
+    if (menu) {
+      currentContextMenu = menu;
+      contextMenuOpen = true;
+      return true;
+    }
+    
+    contextMenuOpen = false;
+    currentContextMenu = null;
+    return false;
+  }
+  
+  function waitForContextMenu(callback, attempts = 6, delayMs = 100) {
+    const menu = findContextMenu();
+    if (menu) {
+      currentContextMenu = menu;
+      contextMenuOpen = true;
+      callback(menu);
+      return;
+    }
+    
+    if (attempts <= 0) {
+      callback(null);
+      return;
+    }
+    
+    setTimeout(() => waitForContextMenu(callback, attempts - 1, delayMs), delayMs);
+  }
+              
   // Detect when context menu opens
   const observer = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
@@ -556,24 +718,27 @@
   // Helper function to check if node is a context menu
   function isContextMenu(node) {
     if (!node || !node.querySelector) return false;
+    if (!isElementVisible(node) || !isMenuSizeReasonable(node)) return false;
     
     // Look for menu items - WhatsApp menus typically have multiple list items or buttons
-    const buttons = node.querySelectorAll('[role="button"]');
-    const listItems = node.querySelectorAll('li');
-    
-    // If we have multiple menu-like items, it's likely a context menu
-    return buttons.length >= 2 || listItems.length >= 2;
+    const items = getMenuItemsForNode(node);
+    return items.length >= 2;
   }
 
   // Find and click a menu item by action
-  function clickMenuItemByAction(action) {
-    if (!currentContextMenu) {
+  function clickMenuItemByAction(action, menuOverride = null) {
+    const menu = menuOverride || currentContextMenu || findContextMenu();
+    
+    if (!menu) {
       console.log('❌ WhatsApp Web Improver: No context menu found');
       return false;
     }
+    
+    currentContextMenu = menu;
+    contextMenuOpen = true;
 
     // Find all possible menu items
-    const menuItems = currentContextMenu.querySelectorAll('[role="button"], li[tabindex], div[tabindex], li, div[role="button"]');
+    const menuItems = menu.querySelectorAll('[role="button"], li[tabindex], div[tabindex], li, div[role="button"]');
     
     console.log(`🔍 WhatsApp Web Improver: Looking for "${action}" action among ${menuItems.length} menu items`);
 
@@ -600,6 +765,15 @@
                 Array.from(menuItems).map(i => i.textContent.trim().substring(0, 20)));
     return false;
   }
+  
+  function getActionForKey(key) {
+    for (const [action, config] of Object.entries(shortcuts)) {
+      if (config.enabled && config.key === key) {
+        return action;
+      }
+    }
+    return null;
+  }
 
   // Listen for keypress events
   document.addEventListener('keydown', (e) => {
@@ -614,9 +788,19 @@
     
     // Arrow Up to enter navigation mode (only when NOT typing)
     if (navEnabled && pressedKey === 'ArrowUp' && !messageNavigationMode && !contextMenuOpen && !isTyping) {
+      console.log('🚀 WhatsApp Web Improver: Entering navigation mode via ArrowUp');
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
+      enterNavigationMode();
+      return;
+    }
+    
+    // Escape to enter navigation mode (alternative)
+    if (navEnabled && pressedKey === 'Escape' && !messageNavigationMode && !contextMenuOpen && !isTyping) {
+      console.log('🚀 WhatsApp Web Improver: Entering navigation mode via Escape');
+      e.preventDefault();
+      e.stopPropagation();
       enterNavigationMode();
       return;
     }
@@ -658,9 +842,12 @@
       
       // Check for action shortcuts (only after a short delay to prevent accidental triggers)
       const timeSinceEntry = Date.now() - navigationModeEnteredAt;
-      if (timeSinceEntry > 200) { // 200ms delay before allowing actions
+      console.log(`⌨️ Nav mode key: "${pressedKeyLower}", time since entry: ${timeSinceEntry}ms`);
+      
+      if (timeSinceEntry > 300) { // 300ms delay before allowing actions
         for (const [action, config] of Object.entries(shortcuts)) {
           if (config.enabled && config.key === pressedKeyLower) {
+            console.log(`🎯 Triggering action: ${action}`);
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
@@ -668,6 +855,8 @@
             return;
           }
         }
+      } else {
+        console.log('⏳ Ignoring key - too soon after entering navigation mode');
       }
     }
 
@@ -683,19 +872,18 @@
       console.log(`⌨️  WhatsApp Web Improver: Key "${pressedKeyLower}" pressed (menu open: ${contextMenuOpen})`);
     }
 
-    if (!contextMenuOpen) return;
+    const actionForKey = getActionForKey(pressedKeyLower);
+    if (!actionForKey) return;
+    
+    if (!contextMenuOpen && !ensureContextMenuOpen()) {
+      return;
+    }
 
-    // Check if the pressed key matches any enabled shortcut
-    for (const [action, config] of Object.entries(shortcuts)) {
-      if (config.enabled && config.key === pressedKeyLower) {
-        console.log(`🎯 WhatsApp Web Improver: Matched shortcut "${pressedKeyLower}" → "${action}"`);
-        
-        if (clickMenuItemByAction(action)) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-        break;
-      }
+    console.log(`🎯 WhatsApp Web Improver: Matched shortcut "${pressedKeyLower}" → "${actionForKey}"`);
+    
+    if (clickMenuItemByAction(actionForKey)) {
+      e.preventDefault();
+      e.stopPropagation();
     }
   }, true);
 

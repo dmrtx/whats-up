@@ -7,6 +7,7 @@ A Chrome extension that adds configurable keyboard shortcuts to WhatsApp Web, si
 - **🔧 Fully Configurable**: Customize all keyboard shortcuts to your preference
 - **⚡ Quick Actions**: Perform common actions with a single keypress
 - **🎨 Beautiful Settings UI**: Easy-to-use options page with toggle switches
+- **📌 Popup Dashboard**: Manage shortcuts and performance from the extension popup (auto-saves changes)
 - **🌍 Multi-language Support**: Works with WhatsApp in different languages
 - **🚀 Lightweight**: Fast and efficient, no performance impact
 
@@ -44,11 +45,10 @@ A Chrome extension that adds configurable keyboard shortcuts to WhatsApp Web, si
 
 ### Customizing Shortcuts
 
-1. Right-click the extension icon in Chrome toolbar
-2. Click "Options" or go to `chrome://extensions/` and click "Details" → "Extension options"
-3. Configure your preferred keyboard shortcuts
-4. Toggle actions on/off as needed
-5. Click "Save Settings"
+1. Click the extension icon to open the popup dashboard
+2. Configure your preferred keyboard shortcuts
+3. Toggle actions on/off as needed
+4. Click "Reset Defaults" if you want to restore the original setup
 
 ## How It Works
 

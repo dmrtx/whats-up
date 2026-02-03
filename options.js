@@ -26,8 +26,20 @@ const defaultPerformanceSettings = {
   }
 };
 
+const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
+const LAST_ACTIVE_KEY = 'waImproverLastSeen';
+
+let isPopupView = false;
+let lastMemorySnapshot = null;
+let lastSeenTimestamp = null;
+let isLoading = false;
+let autoSaveTimer = null;
+
+const AUTO_SAVE_DEBOUNCE_MS = 400;
+
 // Load saved settings
 function loadSettings() {
+  isLoading = true;
   chrome.storage.sync.get(['shortcuts', 'performance'], (data) => {
     const settings = data.shortcuts || defaultSettings;
     const perfSettings = data.performance || defaultPerformanceSettings;
@@ -61,11 +73,12 @@ function loadSettings() {
       memoryMonitorEnabled.checked = perfSettings.memoryMonitor?.enabled || false;
       memoryThreshold.value = perfSettings.memoryMonitor?.threshold || 1000;
       memoryThreshold.disabled = !memoryMonitorEnabled.checked;
-      
-      // Show memory status if enabled
-      if (memoryMonitorEnabled.checked) {
-        document.getElementById('memory-status').style.display = 'flex';
-      }
+    }
+    
+    const memoryStatus = document.getElementById('memory-status');
+    if (memoryStatus) {
+      const shouldShowMemory = isPopupView || (memoryMonitorEnabled && memoryMonitorEnabled.checked);
+      memoryStatus.style.display = shouldShowMemory ? 'flex' : 'none';
     }
     
     if (showReloadNotification) {
@@ -77,11 +90,14 @@ function loadSettings() {
     if (messageNavigationEnabled) {
       messageNavigationEnabled.checked = perfSettings.messageNavigation?.enabled !== false;
     }
+    
+    isLoading = false;
   });
 }
 
 // Save settings
-function saveSettings() {
+function saveSettings(options = {}) {
+  const { silent = false } = options;
   const settings = {};
   
   Object.keys(defaultSettings).forEach(action => {
@@ -128,7 +144,9 @@ function saveSettings() {
     shortcuts: settings,
     performance: performanceSettings
   }, () => {
-    showStatus('success', 'Settings saved successfully! ✓');
+    if (!silent) {
+      showStatus('success', 'Settings saved successfully! ✓');
+    }
   });
 }
 
@@ -210,55 +228,182 @@ function setupPerformanceListeners() {
   if (memoryMonitorEnabled && memoryThreshold) {
     memoryMonitorEnabled.addEventListener('change', () => {
       memoryThreshold.disabled = !memoryMonitorEnabled.checked;
-      memoryStatus.style.display = memoryMonitorEnabled.checked ? 'flex' : 'none';
+      if (memoryStatus) {
+        const shouldShowMemory = isPopupView || memoryMonitorEnabled.checked;
+        memoryStatus.style.display = shouldShowMemory ? 'flex' : 'none';
+      }
     });
   }
 }
 
-// Check current memory (from WhatsApp tab if possible)
-function checkMemoryStatus() {
-  // Note: This shows estimated memory from the options page itself
-  // The actual monitoring happens in the content script
+function scheduleAutoSave() {
+  if (!isPopupView || isLoading) return;
+  
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer);
+  }
+  
+  autoSaveTimer = setTimeout(() => {
+    saveSettings({ silent: true });
+  }, AUTO_SAVE_DEBOUNCE_MS);
+}
+
+function setupAutoSave() {
+  if (!isPopupView) return;
+  
+  const inputs = document.querySelectorAll('input, select');
+  inputs.forEach((input) => {
+    input.addEventListener('input', scheduleAutoSave);
+    input.addEventListener('change', scheduleAutoSave);
+  });
+}
+
+function getLocalMemorySnapshot() {
   if (performance && performance.memory) {
     const usedMB = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
     const totalMB = Math.round(performance.memory.jsHeapSizeLimit / (1024 * 1024));
-    const percentage = Math.round((usedMB / totalMB) * 100);
-    
-    const memoryValue = document.getElementById('memory-value');
-    const memoryBarFill = document.getElementById('memory-bar-fill');
-    
-    if (memoryValue) {
-      memoryValue.textContent = `${usedMB} MB used (options page)`;
-    }
-    
-    if (memoryBarFill) {
-      memoryBarFill.style.width = `${Math.min(percentage, 100)}%`;
-      memoryBarFill.className = 'memory-bar-fill';
-      if (percentage > 80) {
-        memoryBarFill.classList.add('danger');
-      } else if (percentage > 60) {
-        memoryBarFill.classList.add('warning');
-      }
-    }
-  } else {
-    const memoryValue = document.getElementById('memory-value');
-    if (memoryValue) {
-      memoryValue.textContent = 'Memory API not available in this browser';
-    }
+    const percentage = totalMB > 0 ? Math.round((usedMB / totalMB) * 100) : 0;
+    return {
+      available: true,
+      usedMB,
+      totalMB,
+      percentage,
+      timestamp: Date.now(),
+      source: 'local'
+    };
   }
+  
+  return {
+    available: false,
+    reason: 'Memory API not available',
+    timestamp: Date.now(),
+    source: 'local'
+  };
+}
+
+function formatAge(timestamp) {
+  if (!timestamp) return '';
+  const diffMs = Date.now() - timestamp;
+  const seconds = Math.max(0, Math.round(diffMs / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  return `${minutes}m ago`;
+}
+
+function updateConnectionStatus() {
+  const statusEl = document.getElementById('connection-status');
+  const detailEl = document.getElementById('connection-detail');
+  if (!statusEl || !detailEl) return;
+  
+  if (!lastSeenTimestamp) {
+    statusEl.textContent = 'Not connected';
+    statusEl.dataset.state = 'offline';
+    detailEl.textContent = 'Open WhatsApp Web to activate the extension.';
+    return;
+  }
+  
+  const ageMs = Date.now() - lastSeenTimestamp;
+  const isFresh = ageMs < 90000;
+  statusEl.textContent = isFresh ? 'Connected' : 'Waiting';
+  statusEl.dataset.state = isFresh ? 'online' : 'idle';
+  detailEl.textContent = isFresh ? `Active ${formatAge(lastSeenTimestamp)}` : `Last seen ${formatAge(lastSeenTimestamp)}`;
+}
+
+function updateMemoryUI(snapshot) {
+  const memoryValue = document.getElementById('memory-value');
+  const memoryBarFill = document.getElementById('memory-bar-fill');
+  
+  if (!memoryValue || !memoryBarFill) return;
+  
+  if (!snapshot) {
+    memoryValue.textContent = 'Waiting for WhatsApp Web...';
+    memoryBarFill.style.width = '0%';
+    memoryBarFill.className = 'memory-bar-fill';
+    return;
+  }
+  
+  if (!snapshot.available) {
+    memoryValue.textContent = snapshot.reason || 'Memory info unavailable';
+    memoryBarFill.style.width = '0%';
+    memoryBarFill.className = 'memory-bar-fill';
+    return;
+  }
+  
+  const sourceLabel = snapshot.source === 'content' ? 'WhatsApp' : 'This page';
+  const ageLabel = snapshot.timestamp ? ` • ${formatAge(snapshot.timestamp)}` : '';
+  memoryValue.textContent = `${snapshot.usedMB} MB used (${sourceLabel})${ageLabel}`;
+  
+  const percentage = Math.min(snapshot.percentage || 0, 100);
+  memoryBarFill.style.width = `${percentage}%`;
+  memoryBarFill.className = 'memory-bar-fill';
+  
+  if (percentage > 80) {
+    memoryBarFill.classList.add('danger');
+  } else if (percentage > 60) {
+    memoryBarFill.classList.add('warning');
+  }
+}
+
+function refreshMemoryStatus() {
+  updateConnectionStatus();
+  updateMemoryUI(lastMemorySnapshot);
+}
+
+function loadMemoryStatus() {
+  chrome.storage.local.get([MEMORY_STATUS_KEY, LAST_ACTIVE_KEY], (data) => {
+    lastMemorySnapshot = data[MEMORY_STATUS_KEY] || null;
+    lastSeenTimestamp = data[LAST_ACTIVE_KEY] || null;
+    
+    if (!lastMemorySnapshot && !isPopupView) {
+      lastMemorySnapshot = getLocalMemorySnapshot();
+    }
+    
+    refreshMemoryStatus();
+  });
 }
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+  isPopupView = document.body?.dataset?.view === 'popup';
+  
   loadSettings();
   setupToggleListeners();
   setupKeyInputListeners();
   setupPerformanceListeners();
+  setupAutoSave();
   
-  // Check memory periodically
-  checkMemoryStatus();
-  setInterval(checkMemoryStatus, 5000);
+  // Memory + connection status
+  loadMemoryStatus();
+  const refreshInterval = isPopupView ? 5000 : 10000;
+  setInterval(refreshMemoryStatus, refreshInterval);
   
-  document.getElementById('save-btn').addEventListener('click', saveSettings);
-  document.getElementById('reset-btn').addEventListener('click', resetSettings);
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    
+    if (changes[MEMORY_STATUS_KEY]) {
+      lastMemorySnapshot = changes[MEMORY_STATUS_KEY].newValue || null;
+    }
+    
+    if (changes[LAST_ACTIVE_KEY]) {
+      lastSeenTimestamp = changes[LAST_ACTIVE_KEY].newValue || null;
+    }
+    
+    refreshMemoryStatus();
+  });
+  
+  const saveBtn = document.getElementById('save-btn');
+  const resetBtn = document.getElementById('reset-btn');
+  const openOptionsBtn = document.getElementById('open-options-btn');
+  
+  if (saveBtn) {
+    if (isPopupView) {
+      saveBtn.style.display = 'none';
+    } else {
+      saveBtn.addEventListener('click', () => saveSettings());
+    }
+  }
+  if (resetBtn) resetBtn.addEventListener('click', resetSettings);
+  if (openOptionsBtn) {
+    openOptionsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
+  }
 });

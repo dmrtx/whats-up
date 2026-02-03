@@ -4,12 +4,15 @@
   "version": "1.0.0",
   "description": "Add keyboard shortcuts to WhatsApp Web - Configurable shortcuts for edit, delete, reply, and more",
   "permissions": ["storage"],
+  "action": {
+    "default_title": "WhatsApp Web Improver",
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
       "matches": ["https://web.whatsapp.com/*"],
       "js": ["content.js"],
       "run_at": "document_end"
     }
-  ],
-  "options_page": "options.html"
+  ]
 }
