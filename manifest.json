@@ -8,11 +8,20 @@
     "default_title": "WhatsApp Web Improver",
     "default_popup": "popup.html"
   },
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": ["https://web.whatsapp.com/*"],
       "js": ["content.js"],
       "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["popup.html", "popup.css", "options.js", "options.css", "icon16.png"],
+      "matches": ["https://web.whatsapp.com/*"]
     }
   ]
 }
