@@ -23,6 +23,7 @@
   let selectedMessageIndex = -1;
   let messageElements = [];
   let navigationModeEnteredAt = 0; // Timestamp to prevent immediate actions
+  let navigationActionInProgress = false;
   let optionsButtonObserver = null;
   let optionsButtonDebounceTimer = null;
   const PANEL_MIN_WIDTH = 500;
@@ -33,6 +34,85 @@
   const LAST_ACTIVE_KEY = 'waImproverLastSeen';
   const MEMORY_REPORT_INTERVAL_MS = 10000;
   let lastMemoryReportAt = 0;
+  let extensionContextInvalid = false;
+
+  function markContextInvalid(reason) {
+    if (extensionContextInvalid) return;
+    extensionContextInvalid = true;
+    console.warn('WhatsApp Web Improver: Extension context became invalid', reason || 'unknown');
+  }
+
+  function isExtensionContextValid() {
+    if (extensionContextInvalid) return false;
+
+    try {
+      return Boolean(chrome?.runtime?.id);
+    } catch (error) {
+      markContextInvalid(error?.message || error);
+      return false;
+    }
+  }
+
+  function getRuntimeLastErrorMessage() {
+    try {
+      return chrome?.runtime?.lastError?.message || '';
+    } catch (error) {
+      markContextInvalid(error?.message || error);
+      return 'Extension context invalidated';
+    }
+  }
+
+  function safeStorageLocalSet(payload) {
+    if (!isExtensionContextValid()) return false;
+
+    try {
+      chrome.storage.local.set(payload, () => {
+        const runtimeErrorMessage = getRuntimeLastErrorMessage();
+        if (runtimeErrorMessage) {
+          console.warn('WhatsApp Web Improver: storage.local.set runtime error', runtimeErrorMessage);
+          if (runtimeErrorMessage.includes('Extension context invalidated')) {
+            markContextInvalid(runtimeErrorMessage);
+          }
+        }
+      });
+      return true;
+    } catch (error) {
+      if (String(error?.message || '').includes('Extension context invalidated')) {
+        markContextInvalid(error?.message || error);
+      }
+      console.warn('WhatsApp Web Improver: storage.local.set failed', error?.message || error);
+      return false;
+    }
+  }
+
+  function safeStorageSyncGet(keys, callback) {
+    if (!isExtensionContextValid()) {
+      callback({});
+      return;
+    }
+
+    try {
+      chrome.storage.sync.get(keys, (data) => {
+        const runtimeErrorMessage = getRuntimeLastErrorMessage();
+        if (runtimeErrorMessage) {
+          console.warn('WhatsApp Web Improver: storage.sync.get runtime error', runtimeErrorMessage);
+          if (runtimeErrorMessage.includes('Extension context invalidated')) {
+            markContextInvalid(runtimeErrorMessage);
+          }
+          callback({});
+          return;
+        }
+
+        callback(data || {});
+      });
+    } catch (error) {
+      if (String(error?.message || '').includes('Extension context invalidated')) {
+        markContextInvalid(error?.message || error);
+      }
+      console.warn('WhatsApp Web Improver: storage.sync.get failed', error?.message || error);
+      callback({});
+    }
+  }
 
   // Default shortcuts
   const defaultShortcuts = {
@@ -50,8 +130,7 @@
   const defaultPerformanceSettings = {
     autoReload: { enabled: false, time: '04:00' },
     memoryMonitor: { enabled: false, threshold: 1000 },
-    showReloadNotification: true,
-    messageNavigation: { enabled: true, entryMode: 'alt-up' }
+    showReloadNotification: true
   };
 
   // Action keywords in different languages
@@ -68,7 +147,7 @@
 
   // Load settings from storage
   function loadSettings() {
-    chrome.storage.sync.get(['shortcuts', 'performance'], (data) => {
+    safeStorageSyncGet(['shortcuts', 'performance'], (data) => {
       shortcuts = data.shortcuts || defaultShortcuts;
       performanceSettings = data.performance || defaultPerformanceSettings;
       console.log('WhatsApp Web Improver: Settings loaded', { shortcuts, performanceSettings });
@@ -79,18 +158,33 @@
   }
 
   // Listen for storage changes
-  chrome.storage.onChanged.addListener((changes, namespace) => {
-    if (namespace === 'sync') {
-      if (changes.shortcuts) {
-        shortcuts = changes.shortcuts.newValue;
-        console.log('WhatsApp Web Improver: Shortcuts updated', shortcuts);
+  function registerStorageChangeListener() {
+    if (!isExtensionContextValid()) return;
+
+    try {
+      chrome.storage.onChanged.addListener((changes, namespace) => {
+        if (!isExtensionContextValid()) return;
+
+        if (namespace === 'sync') {
+          if (changes.shortcuts) {
+            shortcuts = changes.shortcuts.newValue;
+            console.log('WhatsApp Web Improver: Shortcuts updated', shortcuts);
+          }
+          if (changes.performance) {
+            performanceSettings = changes.performance.newValue;
+            console.log('WhatsApp Web Improver: Performance settings updated', performanceSettings);
+          }
+        }
+      });
+    } catch (error) {
+      if (String(error?.message || '').includes('Extension context invalidated')) {
+        markContextInvalid(error?.message || error);
       }
-      if (changes.performance) {
-        performanceSettings = changes.performance.newValue;
-        console.log('WhatsApp Web Improver: Performance settings updated', performanceSettings);
-      }
+      console.warn('WhatsApp Web Improver: Failed to register storage change listener', error?.message || error);
     }
-  });
+  }
+
+  registerStorageChangeListener();
 
   // Initialize settings
   loadSettings();
@@ -98,7 +192,7 @@
   // ===== PERFORMANCE MONITORING =====
   
   function markExtensionActive() {
-    chrome.storage.local.set({ [LAST_ACTIVE_KEY]: Date.now() });
+    return safeStorageLocalSet({ [LAST_ACTIVE_KEY]: Date.now() });
   }
   
   function getMemorySnapshot() {
@@ -132,16 +226,25 @@
     if (!force && now - lastMemoryReportAt < MEMORY_REPORT_INTERVAL_MS) return;
     
     lastMemoryReportAt = now;
-    chrome.storage.local.set({ [MEMORY_STATUS_KEY]: getMemorySnapshot() });
+    return safeStorageLocalSet({ [MEMORY_STATUS_KEY]: getMemorySnapshot() });
   }
   
   function startHeartbeat() {
-    markExtensionActive();
+    if (!markExtensionActive()) return;
     reportMemorySnapshot(true);
     
-    setInterval(() => {
-      markExtensionActive();
+    const heartbeatTimer = setInterval(() => {
+      if (!isExtensionContextValid()) {
+        clearInterval(heartbeatTimer);
+        return;
+      }
+
+      const activeUpdated = markExtensionActive();
       reportMemorySnapshot();
+
+      if (!activeUpdated) {
+        clearInterval(heartbeatTimer);
+      }
     }, MEMORY_REPORT_INTERVAL_MS);
   }
 
@@ -524,6 +627,7 @@
   // Exit message navigation mode
   function exitNavigationMode() {
     messageNavigationMode = false;
+    navigationActionInProgress = false;
     selectedMessageIndex = -1;
     messageElements = [];
     
@@ -539,11 +643,18 @@
   // Trigger action on selected message
   function triggerActionOnSelectedMessage(action) {
     console.log(`🎯 triggerActionOnSelectedMessage called with action: "${action}"`);
+
+    if (navigationActionInProgress) {
+      console.log('⏳ Navigation action already in progress, ignoring key press');
+      return false;
+    }
     
     if (selectedMessageIndex < 0 || selectedMessageIndex >= messageElements.length) {
       console.log('❌ Invalid message index');
       return false;
     }
+
+    navigationActionInProgress = true;
     
     const msg = messageElements[selectedMessageIndex];
     
@@ -553,18 +664,63 @@
                 msg;
     
     console.log(`🎯 WhatsApp Web Improver: Triggering "${action}" on selected message`, targetElement);
-    
-    openContextMenuForMessageElement(targetElement);
-    
-    // Wait for context menu to appear, then trigger action
-    waitForContextMenu((menu) => {
-      if (menu) {
-        clickMenuItemByAction(action, menu);
-      } else {
-        console.log('❌ Context menu did not open');
-      }
+
+    const finishWithFailure = () => {
+      console.log('❌ Failed to trigger action after retries');
+      navigationActionInProgress = false;
       exitNavigationMode();
-    }, 12, 120);
+    };
+
+    const finishWithSuccess = () => {
+      navigationActionInProgress = false;
+      exitNavigationMode();
+    };
+
+    let remainingOpenAttempts = 3;
+
+    const tryOpenAndClick = () => {
+      contextMenuOpen = false;
+      currentContextMenu = null;
+      openContextMenuForMessageElement(targetElement);
+
+      waitForContextMenu((menu) => {
+        const activeMenu = menu || findContextMenu();
+
+        if (!activeMenu) {
+          remainingOpenAttempts -= 1;
+          if (remainingOpenAttempts <= 0) {
+            finishWithFailure();
+            return;
+          }
+
+          setTimeout(tryOpenAndClick, 160);
+          return;
+        }
+
+        let remainingClickAttempts = 8;
+
+        const attemptClick = (menuCandidate = null) => {
+          if (clickMenuItemByAction(action, menuCandidate, false)) {
+            finishWithSuccess();
+            return;
+          }
+
+          remainingClickAttempts -= 1;
+          if (remainingClickAttempts <= 0) {
+            finishWithFailure();
+            return;
+          }
+
+          setTimeout(() => {
+            attemptClick(findContextMenu());
+          }, 120);
+        };
+
+        attemptClick(activeMenu);
+      }, 14, 110);
+    };
+
+    tryOpenAndClick();
     
     return true;
   }
@@ -682,19 +838,117 @@
     targetElement.dispatchEvent(new MouseEvent('contextmenu', base));
   }
 
+  function resolveMessageActionTarget(messageElement) {
+    if (!messageElement) return null;
+
+    const preferredSelectors = [
+      '[data-pre-plain-text]',
+      '[data-testid="msg-container"]',
+      '[data-testid="selectable-text"]',
+      '[class*="copyable-text"]',
+      'div[class*="message-in"]',
+      'div[class*="message-out"]',
+      'span[dir]'
+    ];
+
+    for (const selector of preferredSelectors) {
+      const found = messageElement.closest(selector) || messageElement.querySelector(selector);
+      if (found && isElementVisible(found)) {
+        return found;
+      }
+    }
+
+    const containers = [
+      messageElement.closest('[data-id]'),
+      messageElement.closest('[data-testid="msg-container"]'),
+      messageElement.closest('div[class*="message-in"], div[class*="message-out"]'),
+      messageElement.closest('[role="row"]'),
+      messageElement
+    ].filter(Boolean);
+
+    const innerSelectors = [
+      '[data-pre-plain-text]',
+      '[data-testid="selectable-text"]',
+      '[class*="copyable-text"]',
+      'span[dir]'
+    ];
+
+    const candidates = [];
+    for (const container of containers) {
+      if (isElementVisible(container)) candidates.push(container);
+      for (const selector of innerSelectors) {
+        const found = container.querySelector(selector);
+        if (found && isElementVisible(found)) candidates.push(found);
+      }
+    }
+
+    if (candidates.length === 0) return messageElement;
+
+    candidates.sort((left, right) => {
+      const l = left.getBoundingClientRect();
+      const r = right.getBoundingClientRect();
+      return (l.width * l.height) - (r.width * r.height);
+    });
+
+    return candidates[0];
+  }
+
   function openContextMenuForMessageElement(messageElement) {
     if (!messageElement) return;
 
-    messageElement.scrollIntoView({ behavior: 'auto', block: 'center' });
-    const rect = messageElement.getBoundingClientRect();
+    const actionTarget = resolveMessageActionTarget(messageElement) || messageElement;
+
+    const row = actionTarget.closest('[data-id], [role="row"], [data-testid="msg-container"]') || actionTarget;
+    const menuButtonSelectors = [
+      'span[data-icon="down-context"]',
+      'span[data-icon*="down"]',
+      '[data-testid*="down-context"]',
+      '[data-testid*="context"]'
+    ];
+
+    row.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, view: window }));
+    row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }));
+
+    const rowRect = row.getBoundingClientRect();
+    const menuButtonCandidates = [];
+
+    for (const selector of menuButtonSelectors) {
+      const candidate = row.querySelector(selector) || actionTarget.querySelector(selector);
+      if (!candidate) continue;
+
+      const clickable = candidate.closest('[role="button"], button, [tabindex]') || candidate;
+      const rect = clickable.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const sameVerticalBand = rect.bottom >= rowRect.top - 20 && rect.top <= rowRect.bottom + 20;
+      if (!sameVerticalBand) continue;
+      menuButtonCandidates.push(clickable);
+    }
+
+    for (const clickable of menuButtonCandidates) {
+      try {
+        clickElementReliably(clickable);
+        return;
+      } catch (error) {
+        // Try next candidate
+      }
+    }
+
+    actionTarget.scrollIntoView({ behavior: 'auto', block: 'center' });
+    const rect = actionTarget.getBoundingClientRect();
 
     if (!rect.width || !rect.height) return;
 
-    const x = Math.round(rect.left + Math.min(48, Math.max(12, rect.width * 0.25)));
-    const y = Math.round(rect.top + Math.max(12, rect.height * 0.5));
-    const topMost = document.elementFromPoint(x, y) || messageElement;
+    const probePoints = [
+      [Math.round(rect.left + rect.width * 0.8), Math.round(rect.top + rect.height * 0.25)],
+      [Math.round(rect.left + rect.width * 0.9), Math.round(rect.top + rect.height * 0.5)],
+      [Math.round(rect.left + rect.width * 0.8), Math.round(rect.top + rect.height * 0.75)],
+      [Math.round(rect.left + rect.width * 0.5), Math.round(rect.top + rect.height * 0.5)]
+    ];
 
-    dispatchRightClickSequence(topMost, x, y);
+    for (const [x, y] of probePoints) {
+      const topMost = document.elementFromPoint(x, y) || actionTarget;
+      dispatchRightClickSequence(topMost, x, y);
+    }
   }
               
   // Detect when context menu opens
@@ -762,44 +1016,210 @@
     return true;
   }
 
-  // Find and click a menu item by action
-  function clickMenuItemByAction(action, menuOverride = null) {
-    const menu = menuOverride || currentContextMenu || findContextMenu();
-    
-    if (!menu) {
-      console.log('❌ WhatsApp Web Improver: No context menu found');
-      return false;
+  function normalizeText(value) {
+    return (value || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
+  }
+
+  function getActiveContextMenu(menuOverride = null) {
+    if (menuOverride && menuOverride.isConnected && isElementVisible(menuOverride) && isContextMenu(menuOverride)) {
+      return menuOverride;
     }
-    
-    currentContextMenu = menu;
-    contextMenuOpen = true;
 
-    // Find all possible menu items
-    const menuItems = menu.querySelectorAll('[role="button"], li[tabindex], div[tabindex], li, div[role="button"]');
-    
-    console.log(`🔍 WhatsApp Web Improver: Looking for "${action}" action among ${menuItems.length} menu items`);
+    if (currentContextMenu && currentContextMenu.isConnected && isElementVisible(currentContextMenu) && isContextMenu(currentContextMenu)) {
+      return currentContextMenu;
+    }
 
-    const keywords = actionKeywords[action] || [];
+    return findContextMenu();
+  }
 
-    for (const item of menuItems) {
-      const text = item.textContent.toLowerCase().trim();
-      const ariaLabel = item.getAttribute('aria-label')?.toLowerCase() || '';
-      const title = item.getAttribute('title')?.toLowerCase() || '';
-      
-      console.log(`  - Checking: "${text.substring(0, 30)}..."`);
-      
-      // Check if any keyword matches in text, aria-label, or title
-      for (const keyword of keywords) {
-        if (text.includes(keyword) || ariaLabel.includes(keyword) || title.includes(keyword)) {
-          console.log(`✓ WhatsApp Web Improver: "${action}" button found! Clicking...`);
-          item.click();
-          return true;
+  function clickElementReliably(element) {
+    if (!element) return false;
+
+    const rect = element.getBoundingClientRect();
+    const x = Math.round(rect.left + Math.max(8, Math.min(rect.width - 8, rect.width / 2)));
+    const y = Math.round(rect.top + Math.max(8, Math.min(rect.height - 8, rect.height / 2)));
+
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      buttons: 1
+    };
+
+    element.dispatchEvent(new MouseEvent('mousedown', base));
+    element.dispatchEvent(new MouseEvent('mouseup', base));
+    element.dispatchEvent(new MouseEvent('click', base));
+    element.click();
+    return true;
+  }
+
+  function findVisibleActionCandidate(action) {
+    const keywords = (actionKeywords[action] || []).map(normalizeText);
+    if (keywords.length === 0) return null;
+
+    const selectors = [
+      '[role="menuitem"]',
+      '[role="button"]',
+      'li[tabindex]',
+      'div[tabindex]'
+    ];
+
+    const nodes = Array.from(document.querySelectorAll(selectors.join(','))).filter(isElementVisible);
+    const candidates = nodes.filter((node) => {
+      const text = normalizeText(node.textContent);
+      const ariaLabel = normalizeText(node.getAttribute('aria-label'));
+      const title = normalizeText(node.getAttribute('title'));
+      if (!text && !ariaLabel && !title) return false;
+
+      return keywords.some((keyword) => text.includes(keyword) || ariaLabel.includes(keyword) || title.includes(keyword));
+    });
+
+    if (candidates.length === 0) return null;
+
+    candidates.sort((left, right) => {
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      const leftArea = leftRect.width * leftRect.height;
+      const rightArea = rightRect.width * rightRect.height;
+      return leftArea - rightArea;
+    });
+
+    return candidates[0];
+  }
+
+  function getMenuContainerForItem(item) {
+    if (!item) return null;
+
+    let current = item;
+    let depth = 0;
+    while (current && depth < 8) {
+      if (isElementVisible(current) && isMenuSizeReasonable(current)) {
+        const visibleItems = Array.from(getMenuItemsForNode(current)).filter(isElementVisible);
+        if (visibleItems.length >= 2 && visibleItems.length <= 20) {
+          return current;
         }
       }
+
+      current = current.parentElement;
+      depth += 1;
     }
 
-    console.log(`❌ WhatsApp Web Improver: "${action}" button not found. Available items:`, 
-                Array.from(menuItems).map(i => i.textContent.trim().substring(0, 20)));
+    return null;
+  }
+
+  function findMenuScopedActionCandidate(action) {
+    const keywords = (actionKeywords[action] || []).map(normalizeText);
+    if (keywords.length === 0) return null;
+
+    const selectors = [
+      '[role="menuitem"]',
+      '[role="button"]',
+      'li[tabindex]',
+      'div[tabindex]',
+      'li',
+      'button'
+    ];
+
+    const nodes = Array.from(document.querySelectorAll(selectors.join(','))).filter(isElementVisible);
+    const candidates = nodes.filter((node) => {
+      const container = getMenuContainerForItem(node);
+      if (!container) return false;
+
+      const text = normalizeText(node.textContent);
+      const ariaLabel = normalizeText(node.getAttribute('aria-label'));
+      const title = normalizeText(node.getAttribute('title'));
+      if (!text && !ariaLabel && !title) return false;
+
+      return keywords.some((keyword) => text.includes(keyword) || ariaLabel.includes(keyword) || title.includes(keyword));
+    });
+
+    if (candidates.length === 0) return null;
+
+    candidates.sort((left, right) => {
+      const leftContainer = getMenuContainerForItem(left);
+      const rightContainer = getMenuContainerForItem(right);
+
+      if (leftContainer && rightContainer && leftContainer !== rightContainer) {
+        const leftArea = leftContainer.getBoundingClientRect().width * leftContainer.getBoundingClientRect().height;
+        const rightArea = rightContainer.getBoundingClientRect().width * rightContainer.getBoundingClientRect().height;
+        return leftArea - rightArea;
+      }
+
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      return (leftRect.width * leftRect.height) - (rightRect.width * rightRect.height);
+    });
+
+    return candidates[0];
+  }
+
+  // Find and click a menu item by action
+  function clickMenuItemByAction(action, menuOverride = null, allowGlobalFallback = true) {
+    const menu = getActiveContextMenu(menuOverride);
+    
+    if (menu) {
+      currentContextMenu = menu;
+      contextMenuOpen = true;
+
+      // Find all possible menu items
+      const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"], [role="button"], li[tabindex], div[tabindex], li, button'))
+        .filter(isElementVisible);
+      
+      console.log(`🔍 WhatsApp Web Improver: Looking for "${action}" action among ${menuItems.length} menu items`);
+
+      const keywords = (actionKeywords[action] || []).map(normalizeText);
+
+      for (const item of menuItems) {
+        const text = normalizeText(item.textContent);
+        const ariaLabel = normalizeText(item.getAttribute('aria-label'));
+        const title = normalizeText(item.getAttribute('title'));
+        
+        for (const keyword of keywords) {
+          if (text.includes(keyword) || ariaLabel.includes(keyword) || title.includes(keyword)) {
+            console.log(`✓ WhatsApp Web Improver: "${action}" button found! Clicking...`);
+            return clickElementReliably(item);
+          }
+        }
+      }
+
+      console.log(`❌ WhatsApp Web Improver: "${action}" button not found inside active menu`);
+    } else {
+      const scopedCandidate = findMenuScopedActionCandidate(action);
+      if (scopedCandidate) {
+        console.log(`✓ WhatsApp Web Improver: Menu-scoped fallback found "${action}" item. Clicking...`);
+        return clickElementReliably(scopedCandidate);
+      }
+
+      if (!allowGlobalFallback) {
+        console.log('❌ WhatsApp Web Improver: Active menu not detected for selected-message action');
+        return false;
+      }
+      console.log('⚠️ WhatsApp Web Improver: Active menu not detected, trying global action fallback');
+    }
+
+    if (!allowGlobalFallback) {
+      const scopedCandidate = findMenuScopedActionCandidate(action);
+      if (scopedCandidate) {
+        console.log(`✓ WhatsApp Web Improver: Menu-scoped fallback found "${action}" item. Clicking...`);
+        return clickElementReliably(scopedCandidate);
+      }
+      return false;
+    }
+
+    const fallbackItem = findVisibleActionCandidate(action);
+    if (fallbackItem) {
+      console.log(`✓ WhatsApp Web Improver: Fallback found "${action}" item. Clicking...`);
+      return clickElementReliably(fallbackItem);
+    }
+
+    console.log(`❌ WhatsApp Web Improver: "${action}" action not found in visible UI`);
     return false;
   }
   
@@ -823,11 +1243,11 @@
     return false;
   }
 
-  function isChatAreaTarget(target) {
+  function isChatAreaTarget(target, allowComposer = false) {
     if (!(target instanceof Element)) return false;
 
     const inComposer = target.closest('footer, [role="textbox"], [contenteditable="true"], [data-tab="10"]');
-    if (inComposer) return false;
+    if (inComposer && !allowComposer) return false;
 
     return Boolean(
       target.closest(
@@ -836,9 +1256,9 @@
     );
   }
 
-  function canEnterNavigationMode(eventTarget) {
+  function canEnterNavigationMode(eventTarget, allowComposer = false) {
     const target = eventTarget instanceof Element ? eventTarget : document.activeElement;
-    return isChatAreaTarget(target);
+    return isChatAreaTarget(target, allowComposer);
   }
 
   // Listen for keypress events
@@ -853,26 +1273,23 @@
       currentContextMenu = null;
     }
 
-    const navEnabled = performanceSettings.messageNavigation?.enabled !== false;
-    const navEntryMode = performanceSettings.messageNavigation?.entryMode === 'up' ? 'up' : 'alt-up';
-    
-    // Enter navigation mode using selected shortcut mode
-    const isNavigationEntryCombo =
-      navEntryMode === 'up'
-        ? pressedKey === 'ArrowUp' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
-        : pressedKey === 'ArrowUp' && e.altKey && !e.ctrlKey && !e.metaKey;
-
-    if (navEnabled && isNavigationEntryCombo && !messageNavigationMode && !contextMenuOpen && !isTyping && canEnterNavigationMode(e.target)) {
-      const modeLabel = navEntryMode === 'up' ? 'ArrowUp' : 'Option+ArrowUp';
-      console.log(`🚀 WhatsApp Web Improver: Entering navigation mode via ${modeLabel}`);
-      e.preventDefault();
-      e.stopPropagation();
-      enterNavigationMode();
-      return;
-    }
+    const navEnabled = false;
     
     // Handle navigation mode keys
     if (messageNavigationMode) {
+      if (navigationActionInProgress) {
+        if (pressedKey === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          navigationActionInProgress = false;
+          exitNavigationMode();
+        } else if (pressedKey === 'ArrowUp' || pressedKey === 'ArrowDown') {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
+
       // Escape to exit
       if (pressedKey === 'Escape') {
         e.preventDefault();
@@ -911,6 +1328,10 @@
       console.log(`⌨️ Nav mode key: "${pressedKeyLower}", time since entry: ${timeSinceEntry}ms`);
       
       if (timeSinceEntry > 300) { // 300ms delay before allowing actions
+        if (navigationActionInProgress || e.repeat) {
+          return;
+        }
+
         for (const [action, config] of Object.entries(shortcuts)) {
           if (config.enabled && config.key === pressedKeyLower) {
             console.log(`🎯 Triggering action: ${action}`);
@@ -939,14 +1360,16 @@
 
     const actionForKey = getActionForKey(pressedKeyLower);
     if (!actionForKey) return;
-    
-    if (!contextMenuOpen && !ensureContextMenuOpen()) {
-      return;
-    }
+
+    const menuDetected = ensureContextMenuOpen();
 
     console.log(`🎯 WhatsApp Web Improver: Matched shortcut "${pressedKeyLower}" → "${actionForKey}"`);
     
-    if (clickMenuItemByAction(actionForKey)) {
+    if (!menuDetected) {
+      console.log('⚠️ WhatsApp Web Improver: Menu container not detected, trying visible action fallback');
+    }
+
+    if (clickMenuItemByAction(actionForKey, menuDetected ? currentContextMenu : null)) {
       e.preventDefault();
       e.stopPropagation();
     }
@@ -954,7 +1377,7 @@
 
   // Also exit navigation mode when clicking anywhere
   document.addEventListener('click', () => {
-    if (messageNavigationMode) {
+    if (messageNavigationMode && !navigationActionInProgress) {
       exitNavigationMode();
     }
   }, true);
@@ -1008,6 +1431,39 @@
         width: 18px;
         height: 18px;
         display: block;
+      }
+
+      #wa-improver-memory-widget {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-left: 10px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.06);
+        color: rgba(255,255,255,0.9);
+        font-size: 12px;
+        line-height: 1;
+      }
+
+      #wa-improver-memory-widget .wa-improver-memory-value {
+        font-weight: 600;
+        letter-spacing: 0.2px;
+      }
+
+      #wa-improver-memory-widget .wa-improver-reload-btn {
+        border: none;
+        background: rgba(37, 211, 102, 0.2);
+        color: #25D366;
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      #wa-improver-memory-widget .wa-improver-reload-btn:hover {
+        background: rgba(37, 211, 102, 0.3);
       }
     `;
 
@@ -1081,6 +1537,75 @@
     });
 
     return rows[0];
+  }
+
+  function findSidebarTitleNode(sidebarHeader) {
+    if (!sidebarHeader) return null;
+
+    const explicit = sidebarHeader.querySelector('[title="WhatsApp"], h1');
+    if (explicit && isElementVisible(explicit)) return explicit;
+
+    const candidates = Array.from(sidebarHeader.querySelectorAll('span, div')).filter((node) => {
+      const text = (node.textContent || '').trim();
+      if (!text || text.length > 40) return false;
+      return /whatsapp/i.test(text) && isElementVisible(node);
+    });
+
+    return candidates[0] || null;
+  }
+
+  function createMemoryWidget() {
+    const widget = document.createElement('div');
+    widget.id = 'wa-improver-memory-widget';
+    widget.innerHTML = `
+      <span class="wa-improver-memory-value">Mem: --</span>
+      <button type="button" class="wa-improver-reload-btn" title="Reload WhatsApp Web" aria-label="Reload WhatsApp Web">Reload</button>
+    `;
+
+    const reloadBtn = widget.querySelector('.wa-improver-reload-btn');
+    reloadBtn?.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      location.reload();
+    });
+
+    return widget;
+  }
+
+  function updateMemoryWidget() {
+    const widget = document.getElementById('wa-improver-memory-widget');
+    if (!widget) return;
+
+    const valueEl = widget.querySelector('.wa-improver-memory-value');
+    if (!valueEl) return;
+
+    const snapshot = getMemorySnapshot();
+    valueEl.textContent = snapshot.available ? `Mem: ${snapshot.usedMB} MB` : 'Mem: N/A';
+  }
+
+  function injectMemoryWidget() {
+    ensureInjectedUiStyles();
+
+    const existing = document.getElementById('wa-improver-memory-widget');
+    if (existing) {
+      updateMemoryWidget();
+      return;
+    }
+
+    const sidebarHeader = getSidebarHeader();
+    if (!sidebarHeader) return;
+
+    const titleNode = findSidebarTitleNode(sidebarHeader);
+    const widget = createMemoryWidget();
+
+    if (titleNode && titleNode.parentElement) {
+      titleNode.insertAdjacentElement('afterend', widget);
+    } else {
+      sidebarHeader.prepend(widget);
+    }
+
+    updateMemoryWidget();
+    console.log('WhatsApp Web Improver: Memory widget injected');
   }
 
   function findHeaderAnchorButton() {
@@ -1277,9 +1802,11 @@
     if (optionsButtonObserver || !document.body) return;
 
     injectOptionsButton();
+    injectMemoryWidget();
 
     optionsButtonObserver = new MutationObserver(() => {
       scheduleInjectOptionsButton();
+      injectMemoryWidget();
     });
 
     optionsButtonObserver.observe(document.body, {
@@ -1293,6 +1820,8 @@
 
   setInterval(() => {
     injectOptionsButton();
+    injectMemoryWidget();
+    updateMemoryWidget();
 
     const panel = document.getElementById('wa-improver-options-panel');
     const anchor = document.getElementById('wa-improver-options-btn');

@@ -20,11 +20,7 @@ const defaultPerformanceSettings = {
     enabled: false,
     threshold: 1000  // MB
   },
-  showReloadNotification: true,
-  messageNavigation: {
-    enabled: true,
-    entryMode: 'alt-up'
-  }
+  showReloadNotification: true
 };
 
 const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
@@ -86,17 +82,6 @@ function loadSettings() {
       showReloadNotification.checked = perfSettings.showReloadNotification !== false;
     }
     
-    // Message navigation
-    const messageNavigationEnabled = document.getElementById('message-navigation-enabled');
-    const messageNavigationEntry = document.getElementById('message-navigation-entry');
-    if (messageNavigationEnabled) {
-      messageNavigationEnabled.checked = perfSettings.messageNavigation?.enabled !== false;
-    }
-    if (messageNavigationEntry) {
-      const entryMode = perfSettings.messageNavigation?.entryMode === 'up' ? 'up' : 'alt-up';
-      messageNavigationEntry.value = entryMode;
-    }
-    
     isLoading = false;
   });
 }
@@ -140,11 +125,7 @@ function saveSettings(options = {}) {
       enabled: document.getElementById('memory-monitor-enabled').checked,
       threshold: parseInt(document.getElementById('memory-threshold').value)
     },
-    showReloadNotification: document.getElementById('show-reload-notification').checked,
-    messageNavigation: {
-      enabled: document.getElementById('message-navigation-enabled').checked,
-      entryMode: document.getElementById('message-navigation-entry')?.value === 'up' ? 'up' : 'alt-up'
-    }
+    showReloadNotification: document.getElementById('show-reload-notification').checked
   };
 
   chrome.storage.sync.set({ 
