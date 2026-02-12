@@ -718,11 +718,17 @@
   // Helper function to check if node is a context menu
   function isContextMenu(node) {
     if (!node || !node.querySelector) return false;
-    if (!isElementVisible(node) || !isMenuSizeReasonable(node)) return false;
     
-    // Look for menu items - WhatsApp menus typically have multiple list items or buttons
+    // Optimization: Check for menu items first (cheap DOM traversal)
+    // before checking visibility/size (expensive layout thrashing)
+    // Most added nodes (like messages) have < 2 items and fail here fast.
     const items = getMenuItemsForNode(node);
-    return items.length >= 2;
+    if (items.length < 2) return false;
+
+    // Only do expensive layout checks if it looks like a menu structure
+    if (!isElementVisible(node) || !isMenuSizeReasonable(node)) return false;
+
+    return true;
   }
 
   // Find and click a menu item by action
