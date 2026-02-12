@@ -976,16 +976,46 @@
     return Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(window.innerWidth * 0.52)));
   }
 
-  function createOptionsButton(templateButton = null) {
-    const btn = document.createElement('div');
+  function ensureInjectedUiStyles() {
+    if (document.getElementById('wa-improver-ui-styles')) return;
+
+    const style = document.createElement('style');
+    style.id = 'wa-improver-ui-styles';
+    style.textContent = `
+      #wa-improver-options-btn {
+        width: 36px;
+        height: 36px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 18px;
+        color: #25D366;
+        background: rgba(37, 211, 102, 0.14);
+        border: 1px solid rgba(37, 211, 102, 0.35);
+        cursor: pointer;
+        user-select: none;
+      }
+
+      #wa-improver-options-btn:hover {
+        background: rgba(37, 211, 102, 0.22);
+      }
+
+      #wa-improver-options-btn svg {
+        width: 18px;
+        height: 18px;
+        display: block;
+      }
+    `;
+
+    document.head.appendChild(style);
+  }
+
+  function createOptionsButton() {
+    const btn = document.createElement('button');
+    btn.type = 'button';
     btn.id = 'wa-improver-options-btn';
-    btn.setAttribute('role', 'button');
     btn.setAttribute('title', 'WhatsApp Web Improver Settings');
     btn.setAttribute('aria-label', 'WhatsApp Web Improver Settings');
-
-    if (templateButton?.className) {
-      btn.className = templateButton.className;
-    }
 
     btn.innerHTML = `
       <span data-icon="wa-improver-bolt" style="display: flex; align-items: center; justify-content: center;">
@@ -995,19 +1025,6 @@
       </span>
     `;
 
-    if (!templateButton) {
-      Object.assign(btn.style, {
-        width: '36px',
-        height: '36px',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: '18px',
-        color: 'var(--icon, #8696a0)',
-        cursor: 'pointer'
-      });
-    }
-
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       e.preventDefault();
@@ -1015,6 +1032,36 @@
     });
 
     return btn;
+  }
+
+  function getSidebarHeader() {
+    return document.querySelector('#side header, [data-testid="chat-list-header"], #side div[role="banner"]');
+  }
+
+  function findHeaderActionsRow() {
+    const sidebarHeader = getSidebarHeader();
+    if (!sidebarHeader) return null;
+
+    const menuIcon = sidebarHeader.querySelector('span[data-icon="menu"], span[data-icon="menu-dots"], span[data-icon="kebab-menu"], span[data-icon="more"]');
+    const menuButton = menuIcon?.closest('[role="button"]');
+    if (menuButton?.parentElement) {
+      return menuButton.parentElement;
+    }
+
+    const rows = Array.from(sidebarHeader.querySelectorAll('div')).filter((element) => {
+      return element.querySelectorAll(':scope > [role="button"]').length >= 2;
+    });
+
+    if (rows.length === 0) return null;
+
+    rows.sort((left, right) => {
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      if (Math.abs(leftRect.top - rightRect.top) > 2) return leftRect.top - rightRect.top;
+      return rightRect.left - leftRect.left;
+    });
+
+    return rows[0];
   }
 
   function findHeaderAnchorButton() {
@@ -1076,28 +1123,28 @@
   function injectOptionsButton() {
     if (document.getElementById('wa-improver-options-btn')) return;
 
-    const newChatBtn = findHeaderAnchorButton();
-    if (newChatBtn) {
-      const headerContainer = newChatBtn.parentElement;
-      if (headerContainer) {
-        const btn = createOptionsButton(newChatBtn);
-        headerContainer.insertBefore(btn, newChatBtn);
-        console.log('WhatsApp Web Improver: Options button injected near header action');
-        return;
-      }
-    }
+    ensureInjectedUiStyles();
 
-    const sidebarHeader = document.querySelector('#side header, [data-testid="chat-list-header"], header');
-    if (!sidebarHeader) return;
-
-    const actionsRow = Array.from(sidebarHeader.querySelectorAll('div')).find((element) => {
-      return element.querySelectorAll(':scope > [role="button"]').length >= 1;
-    });
-
+    const actionsRow = findHeaderActionsRow();
     if (!actionsRow) return;
 
+    const newChatBtn = findHeaderAnchorButton();
     const btn = createOptionsButton();
-    actionsRow.prepend(btn);
+
+    if (newChatBtn && newChatBtn.parentElement === actionsRow) {
+      actionsRow.insertBefore(btn, newChatBtn);
+      console.log('WhatsApp Web Improver: Options button injected next to new message');
+      return;
+    }
+
+    const menuButton = actionsRow.querySelector('[role="button"]:last-child');
+    if (menuButton) {
+      actionsRow.insertBefore(btn, menuButton);
+      console.log('WhatsApp Web Improver: Options button injected before menu button');
+      return;
+    }
+
+    actionsRow.appendChild(btn);
 
     console.log('WhatsApp Web Improver: Options button injected');
   }
@@ -1123,6 +1170,8 @@
         position: 'fixed',
         zIndex: '999999',
         width: `${getPanelDesiredWidth()}px`,
+        minWidth: `${PANEL_MIN_WIDTH}px`,
+        maxWidth: `${PANEL_MAX_WIDTH}px`,
         height: '600px',
         maxHeight: '80vh',
         boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
@@ -1137,8 +1186,10 @@
       const iframe = document.createElement('iframe');
       iframe.src = chrome.runtime.getURL('popup.html');
       iframe.style.width = '100%';
+      iframe.style.minWidth = '100%';
       iframe.style.height = '100%';
       iframe.style.border = 'none';
+      iframe.style.display = 'block';
 
       panel.appendChild(iframe);
       document.body.appendChild(panel);
@@ -1160,7 +1211,10 @@
     const rect = anchorBtn.getBoundingClientRect();
     const margin = 10;
     const desiredWidth = getPanelDesiredWidth();
-    panel.style.width = `${Math.min(desiredWidth, window.innerWidth - margin * 2)}px`;
+    const clampedWidth = Math.min(desiredWidth, window.innerWidth - margin * 2);
+    panel.style.setProperty('width', `${clampedWidth}px`, 'important');
+    panel.style.setProperty('min-width', `${Math.min(PANEL_MIN_WIDTH, window.innerWidth - margin * 2)}px`, 'important');
+    panel.style.setProperty('max-width', `${Math.min(PANEL_MAX_WIDTH, window.innerWidth - margin * 2)}px`, 'important');
 
     const panelWidth = panel.offsetWidth || desiredWidth;
     const panelHeight = panel.offsetHeight || 600;
