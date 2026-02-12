@@ -22,11 +22,15 @@ body {
     radial-gradient(circle at 10% 10%, rgba(37, 211, 102, 0.18), transparent 45%),
     radial-gradient(circle at 80% 0%, rgba(18, 140, 126, 0.22), transparent 35%),
     linear-gradient(160deg, var(--bg-deep), var(--bg-mid));
-  width: 380px;
-  max-height: 650px;
+  width: 100%;
+  height: 100%;
   padding: 12px;
   color: var(--text);
   overflow-y: auto;
+}
+
+html {
+  height: 100%;
 }
 
 .container {

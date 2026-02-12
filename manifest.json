@@ -14,5 +14,11 @@
       "js": ["content.js"],
       "run_at": "document_end"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["popup.html", "popup.css", "options.js", "options.css", "icon16.png"],
+      "matches": ["https://web.whatsapp.com/*"]
+    }
   ]
 }

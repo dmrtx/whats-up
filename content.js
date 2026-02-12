@@ -907,4 +907,125 @@
   });
 
   console.log('WhatsApp Web Improver: Monitoring for context menus...');
+
+  // ===== HEADER OPTIONS BUTTON =====
+
+  function injectOptionsButton() {
+    if (document.getElementById('wa-improver-options-btn')) return;
+
+    // Find "New Chat" button by looking for the chat icon
+    // This is robust across languages as it relies on the data-icon attribute
+    const chatIcon = document.querySelector('span[data-icon="chat"]');
+    if (!chatIcon) return;
+
+    const newChatBtn = chatIcon.closest('[role="button"]');
+    if (!newChatBtn) return;
+
+    const headerContainer = newChatBtn.parentElement;
+    if (!headerContainer) return;
+
+    // Create our button
+    const btn = document.createElement('div');
+    btn.id = 'wa-improver-options-btn';
+    btn.setAttribute('role', 'button');
+    btn.setAttribute('title', 'WhatsApp Web Improver Settings');
+    btn.setAttribute('aria-label', 'WhatsApp Web Improver Settings');
+
+    // Copy classes from New Chat button to match WhatsApp style (hover effects, size)
+    btn.className = newChatBtn.className;
+
+    // Inner HTML with a Bolt icon ⚡
+    btn.innerHTML = `
+      <span data-icon="wa-improver-bolt" style="display: flex; align-items: center; justify-content: center;">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+        </svg>
+      </span>
+    `;
+
+    // Add specific style to ensure icon color matches theme
+    // WhatsApp usually sets color on the svg or path.
+    // We'll set generic currentColor and let it inherit.
+
+    // Insert before the New Chat button
+    headerContainer.insertBefore(btn, newChatBtn);
+
+    // Add click listener
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      toggleOptionsPanel(btn);
+    });
+
+    console.log('WhatsApp Web Improver: Options button injected');
+  }
+
+  function toggleOptionsPanel(anchorBtn) {
+    let panel = document.getElementById('wa-improver-options-panel');
+
+    if (panel) {
+      // Toggle visibility
+      if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        positionPanel(panel, anchorBtn);
+      } else {
+        panel.style.display = 'none';
+      }
+    } else {
+      // Create panel (iframe wrapper)
+      panel = document.createElement('div');
+      panel.id = 'wa-improver-options-panel';
+
+      // Style it as a floating popover
+      Object.assign(panel.style, {
+        position: 'fixed',
+        zIndex: '999999',
+        width: '380px',
+        height: '600px',
+        maxHeight: '80vh',
+        boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
+        border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: '12px',
+        overflow: 'hidden',
+        background: 'transparent',
+        display: 'block',
+        transition: 'opacity 0.2s ease'
+      });
+
+      const iframe = document.createElement('iframe');
+      iframe.src = chrome.runtime.getURL('popup.html');
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = 'none';
+
+      panel.appendChild(iframe);
+      document.body.appendChild(panel);
+
+      positionPanel(panel, anchorBtn);
+
+      // Close when clicking outside
+      document.addEventListener('click', (e) => {
+        if (panel.style.display !== 'none' &&
+            !panel.contains(e.target) &&
+            !anchorBtn.contains(e.target)) {
+          panel.style.display = 'none';
+        }
+      });
+    }
+  }
+
+  function positionPanel(panel, anchorBtn) {
+    const rect = anchorBtn.getBoundingClientRect();
+    const top = rect.bottom + 12;
+    // Align to the right of the button, but ensuring it fits in viewport
+    // WhatsApp sidebar is on the left, so we likely want it left-aligned or centered to button
+    // but constrained to the screen.
+    const left = Math.max(10, rect.left);
+
+    panel.style.top = `${top}px`;
+    panel.style.left = `${left}px`;
+  }
+
+  // Monitor for header injection (WhatsApp loads dynamically)
+  setInterval(injectOptionsButton, 2000);
 })();
