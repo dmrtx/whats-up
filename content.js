@@ -26,15 +26,58 @@
   let navigationActionInProgress = false;
   let optionsButtonObserver = null;
   let optionsButtonDebounceTimer = null;
-  const PANEL_MIN_WIDTH = 500;
-  const PANEL_MAX_WIDTH = 560;
+  const PANEL_MIN_WIDTH = 720;
+  const PANEL_MAX_WIDTH = 980;
+  const UI_SCALE_STORAGE_KEY = 'waImproverUiScale';
+  const UI_SCALE_MIN = 85;
+  const UI_SCALE_MAX = 130;
+  const UI_SCALE_STEP = 5;
   
   // Status + memory reporting (shared with popup/options)
   const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
   const LAST_ACTIVE_KEY = 'waImproverLastSeen';
   const MEMORY_REPORT_INTERVAL_MS = 10000;
   let lastMemoryReportAt = 0;
+  let currentUiScale = 100;
   let extensionContextInvalid = false;
+
+  function clampUiScale(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 100;
+    return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, Math.round(numeric)));
+  }
+
+  function loadStoredUiScale() {
+    try {
+      const stored = localStorage.getItem(UI_SCALE_STORAGE_KEY);
+      if (!stored) return 100;
+      return clampUiScale(parseInt(stored, 10));
+    } catch (error) {
+      return 100;
+    }
+  }
+
+  function saveStoredUiScale(value) {
+    try {
+      localStorage.setItem(UI_SCALE_STORAGE_KEY, String(clampUiScale(value)));
+    } catch (error) {
+      // ignore storage errors
+    }
+  }
+
+  function applyWhatsAppScale(scale, persist = true) {
+    const nextScale = clampUiScale(scale);
+    currentUiScale = nextScale;
+
+    const appRoot = document.getElementById('app');
+    if (appRoot) {
+      appRoot.style.zoom = `${nextScale}%`;
+    }
+
+    if (persist) {
+      saveStoredUiScale(nextScale);
+    }
+  }
 
   function markContextInvalid(reason) {
     if (extensionContextInvalid) return;
@@ -150,6 +193,7 @@
     safeStorageSyncGet(['shortcuts', 'performance'], (data) => {
       shortcuts = data.shortcuts || defaultShortcuts;
       performanceSettings = data.performance || defaultPerformanceSettings;
+      applyWhatsAppScale(loadStoredUiScale(), false);
       console.log('WhatsApp Web Improver: Settings loaded', { shortcuts, performanceSettings });
       
       // Start performance monitoring
@@ -1400,7 +1444,7 @@
   }
 
   function getPanelDesiredWidth() {
-    return Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(window.innerWidth * 0.6)));
+    return Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(window.innerWidth * 0.58)));
   }
 
   function ensureInjectedUiStyles() {
@@ -1450,6 +1494,25 @@
       #wa-improver-memory-widget .wa-improver-memory-value {
         font-weight: 600;
         letter-spacing: 0.2px;
+      }
+
+      #wa-improver-memory-widget .wa-improver-scale-value {
+        font-weight: 600;
+        letter-spacing: 0.2px;
+      }
+
+      #wa-improver-memory-widget .wa-improver-scale-btn {
+        border: none;
+        background: rgba(255, 255, 255, 0.14);
+        color: rgba(255, 255, 255, 0.95);
+        border-radius: 999px;
+        padding: 2px 7px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      #wa-improver-memory-widget .wa-improver-scale-btn:hover {
+        background: rgba(255, 255, 255, 0.24);
       }
 
       #wa-improver-memory-widget .wa-improver-reload-btn {
@@ -1554,13 +1617,39 @@
     return candidates[0] || null;
   }
 
+  function findSidebarTitleContainer(sidebarHeader, titleNode) {
+    if (!sidebarHeader) return null;
+
+    const headerRow = sidebarHeader.querySelector(':scope > div');
+    if (headerRow) {
+      const firstBlock = headerRow.querySelector(':scope > div');
+      if (firstBlock) return firstBlock;
+    }
+
+    if (titleNode?.parentElement) return titleNode.parentElement;
+    return sidebarHeader;
+  }
+
   function createMemoryWidget() {
     const widget = document.createElement('div');
     widget.id = 'wa-improver-memory-widget';
     widget.innerHTML = `
+      <button type="button" class="wa-improver-scale-btn" data-delta="-5" title="Decrease WhatsApp scale">−</button>
+      <span class="wa-improver-scale-value">Scale: 100%</span>
+      <button type="button" class="wa-improver-scale-btn" data-delta="5" title="Increase WhatsApp scale">+</button>
       <span class="wa-improver-memory-value">Mem: --</span>
       <button type="button" class="wa-improver-reload-btn" title="Reload WhatsApp Web" aria-label="Reload WhatsApp Web">Reload</button>
     `;
+
+    widget.querySelectorAll('.wa-improver-scale-btn').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const delta = parseInt(button.getAttribute('data-delta') || '0', 10);
+        applyWhatsAppScale(currentUiScale + (Number.isFinite(delta) ? delta : UI_SCALE_STEP));
+        updateMemoryWidget();
+      });
+    });
 
     const reloadBtn = widget.querySelector('.wa-improver-reload-btn');
     reloadBtn?.addEventListener('click', (event) => {
@@ -1579,6 +1668,11 @@
     const valueEl = widget.querySelector('.wa-improver-memory-value');
     if (!valueEl) return;
 
+    const scaleEl = widget.querySelector('.wa-improver-scale-value');
+    if (scaleEl) {
+      scaleEl.textContent = `Scale: ${currentUiScale}%`;
+    }
+
     const snapshot = getMemorySnapshot();
     valueEl.textContent = snapshot.available ? `Mem: ${snapshot.usedMB} MB` : 'Mem: N/A';
   }
@@ -1596,10 +1690,11 @@
     if (!sidebarHeader) return;
 
     const titleNode = findSidebarTitleNode(sidebarHeader);
+    const titleContainer = findSidebarTitleContainer(sidebarHeader, titleNode);
     const widget = createMemoryWidget();
 
-    if (titleNode && titleNode.parentElement) {
-      titleNode.insertAdjacentElement('afterend', widget);
+    if (titleContainer) {
+      titleContainer.appendChild(widget);
     } else {
       sidebarHeader.prepend(widget);
     }
@@ -1817,11 +1912,13 @@
 
   // Monitor for header injection (WhatsApp loads dynamically)
   startOptionsButtonObserver();
+  applyWhatsAppScale(loadStoredUiScale(), false);
 
   setInterval(() => {
     injectOptionsButton();
     injectMemoryWidget();
     updateMemoryWidget();
+    applyWhatsAppScale(currentUiScale, false);
 
     const panel = document.getElementById('wa-improver-options-panel');
     const anchor = document.getElementById('wa-improver-options-btn');
