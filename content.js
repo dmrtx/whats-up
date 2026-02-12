@@ -25,7 +25,7 @@
   let navigationModeEnteredAt = 0; // Timestamp to prevent immediate actions
   let optionsButtonObserver = null;
   let optionsButtonDebounceTimer = null;
-  const PANEL_MIN_WIDTH = 430;
+  const PANEL_MIN_WIDTH = 500;
   const PANEL_MAX_WIDTH = 560;
   
   // Status + memory reporting (shared with popup/options)
@@ -51,7 +51,7 @@
     autoReload: { enabled: false, time: '04:00' },
     memoryMonitor: { enabled: false, threshold: 1000 },
     showReloadNotification: true,
-    messageNavigation: { enabled: true }
+    messageNavigation: { enabled: true, entryMode: 'alt-up' }
   };
 
   // Action keywords in different languages
@@ -586,12 +586,25 @@
     const area = rect.width * rect.height;
     
     // Ignore huge containers (like the full app shell)
-    if (area > viewportArea * 0.7) return false;
+    if (area > viewportArea * 0.35) return false;
     return true;
   }
   
   function getMenuItemsForNode(node) {
     return node.querySelectorAll('[role="button"], [role="menuitem"], li[tabindex], div[tabindex], li');
+  }
+
+  function hasMenuContainerRole(node) {
+    if (!node || !node.getAttribute) return false;
+    const role = node.getAttribute('role');
+    return role === 'menu' || role === 'dialog' || role === 'listbox';
+  }
+
+  function hasMenuLikeDescendants(node) {
+    if (!node?.querySelector) return false;
+    return Boolean(
+      node.querySelector('[role="menuitem"], [role="menu"], [aria-haspopup="menu"], [data-animate-dropdown]')
+    );
   }
   
   function findContextMenu() {
@@ -599,37 +612,18 @@
       '[role="menu"]',
       'div[role="dialog"] [role="menu"]',
       'ul[role="menu"]',
-      'div[role="presentation"] ul',
-      'span[role="application"]',
-      'div[role="application"]'
+      '[data-animate-dropdown]',
+      'div[role="dialog"] ul'
     ];
     
     for (const selector of selectors) {
       const candidates = document.querySelectorAll(selector);
       for (const menu of candidates) {
         if (!isElementVisible(menu) || !isMenuSizeReasonable(menu)) continue;
-        const items = getMenuItemsForNode(menu);
-        if (items.length >= 2) {
+        const items = Array.from(getMenuItemsForNode(menu)).filter(isElementVisible);
+        if (items.length >= 2 && items.length <= 16) {
           return menu;
         }
-      }
-    }
-    
-    // Fallback: find a small container with multiple visible menu-like items
-    const visibleItems = Array.from(document.querySelectorAll('[role="button"], [role="menuitem"], li[tabindex], div[tabindex]'))
-      .filter(isElementVisible);
-    
-    const containerCounts = new Map();
-    for (const item of visibleItems) {
-      const container = item.closest('[role="menu"], [role="dialog"], ul, div, span');
-      if (!container) continue;
-      const count = containerCounts.get(container) || 0;
-      containerCounts.set(container, count + 1);
-    }
-    
-    for (const [container, count] of containerCounts.entries()) {
-      if (count >= 2 && isElementVisible(container) && isMenuSizeReasonable(container)) {
-        return container;
       }
     }
     
@@ -711,10 +705,13 @@
           // Check if this is a context menu (span with role="application" containing menu items)
           let menu = null;
           
-          if (node.getAttribute && node.getAttribute('role') === 'application') {
+          if (node.getAttribute && hasMenuContainerRole(node) && isContextMenu(node)) {
             menu = node;
           } else if (node.querySelector) {
-            menu = node.querySelector('span[role="application"]');
+            const candidate = node.querySelector('[role="menu"], [data-animate-dropdown], [role="dialog"] ul');
+            if (candidate && isContextMenu(candidate)) {
+              menu = candidate;
+            }
           }
           
           // Additional check: look for menu structure
@@ -748,12 +745,16 @@
   // Helper function to check if node is a context menu
   function isContextMenu(node) {
     if (!node || !node.querySelector) return false;
+
+    if (node.id === 'main') return false;
+    if (node.getAttribute && node.getAttribute('role') === 'row') return false;
+    if (!hasMenuContainerRole(node) && !hasMenuLikeDescendants(node)) return false;
     
     // Optimization: Check for menu items first (cheap DOM traversal)
     // before checking visibility/size (expensive layout thrashing)
     // Most added nodes (like messages) have < 2 items and fail here fast.
-    const items = getMenuItemsForNode(node);
-    if (items.length < 2) return false;
+    const items = Array.from(getMenuItemsForNode(node)).filter(isElementVisible);
+    if (items.length < 2 || items.length > 16) return false;
 
     // Only do expensive layout checks if it looks like a menu structure
     if (!isElementVisible(node) || !isMenuSizeReasonable(node)) return false;
@@ -847,20 +848,23 @@
     const isTyping = isTypingTarget(e.target);
 
     // ===== MESSAGE NAVIGATION HANDLING =====
-    const navEnabled = performanceSettings.messageNavigation?.enabled !== false;
-    
-    // Arrow Up to enter navigation mode (only when NOT typing)
-    if (navEnabled && pressedKey === 'ArrowUp' && !messageNavigationMode && !contextMenuOpen && !isTyping && canEnterNavigationMode(e.target)) {
-      console.log('🚀 WhatsApp Web Improver: Entering navigation mode via ArrowUp');
-      e.preventDefault();
-      e.stopPropagation();
-      enterNavigationMode();
-      return;
+    if (contextMenuOpen && !ensureContextMenuOpen()) {
+      contextMenuOpen = false;
+      currentContextMenu = null;
     }
+
+    const navEnabled = performanceSettings.messageNavigation?.enabled !== false;
+    const navEntryMode = performanceSettings.messageNavigation?.entryMode === 'up' ? 'up' : 'alt-up';
     
-    // Escape to enter navigation mode (alternative)
-    if (navEnabled && pressedKey === 'Escape' && !messageNavigationMode && !contextMenuOpen && !isTyping && canEnterNavigationMode(e.target)) {
-      console.log('🚀 WhatsApp Web Improver: Entering navigation mode via Escape');
+    // Enter navigation mode using selected shortcut mode
+    const isNavigationEntryCombo =
+      navEntryMode === 'up'
+        ? pressedKey === 'ArrowUp' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
+        : pressedKey === 'ArrowUp' && e.altKey && !e.ctrlKey && !e.metaKey;
+
+    if (navEnabled && isNavigationEntryCombo && !messageNavigationMode && !contextMenuOpen && !isTyping && canEnterNavigationMode(e.target)) {
+      const modeLabel = navEntryMode === 'up' ? 'ArrowUp' : 'Option+ArrowUp';
+      console.log(`🚀 WhatsApp Web Improver: Entering navigation mode via ${modeLabel}`);
       e.preventDefault();
       e.stopPropagation();
       enterNavigationMode();
@@ -973,7 +977,7 @@
   }
 
   function getPanelDesiredWidth() {
-    return Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(window.innerWidth * 0.52)));
+    return Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(window.innerWidth * 0.6)));
   }
 
   function ensureInjectedUiStyles() {
@@ -1034,8 +1038,23 @@
     return btn;
   }
 
+  function positionFloatingOptionsButton(button) {
+    const sidebarHeader = getSidebarHeader();
+    if (!sidebarHeader) return;
+
+    const rect = sidebarHeader.getBoundingClientRect();
+    const top = Math.max(8, rect.top + 8);
+    const left = Math.max(8, rect.right - 88);
+
+    button.style.position = 'fixed';
+    button.style.top = `${top}px`;
+    button.style.left = `${left}px`;
+    button.style.zIndex = '999998';
+  }
+
   function getSidebarHeader() {
-    return document.querySelector('#side header, [data-testid="chat-list-header"], #side div[role="banner"]');
+    const sideRoot = document.querySelector('#side, [data-testid="chat-list"]') || document;
+    return sideRoot.querySelector('header, [data-testid="chat-list-header"], div[role="banner"]');
   }
 
   function findHeaderActionsRow() {
@@ -1126,7 +1145,13 @@
     ensureInjectedUiStyles();
 
     const actionsRow = findHeaderActionsRow();
-    if (!actionsRow) return;
+    if (!actionsRow) {
+      const floatingBtn = createOptionsButton();
+      document.body.appendChild(floatingBtn);
+      positionFloatingOptionsButton(floatingBtn);
+      console.log('WhatsApp Web Improver: Floating options button injected');
+      return;
+    }
 
     const newChatBtn = findHeaderAnchorButton();
     const btn = createOptionsButton();
@@ -1137,7 +1162,7 @@
       return;
     }
 
-    const menuButton = actionsRow.querySelector('[role="button"]:last-child');
+    const menuButton = Array.from(actionsRow.querySelectorAll('[role="button"]')).pop();
     if (menuButton) {
       actionsRow.insertBefore(btn, menuButton);
       console.log('WhatsApp Web Improver: Options button injected before menu button');
@@ -1185,8 +1210,9 @@
 
       const iframe = document.createElement('iframe');
       iframe.src = chrome.runtime.getURL('popup.html');
-      iframe.style.width = '100%';
-      iframe.style.minWidth = '100%';
+      iframe.style.setProperty('width', '100%', 'important');
+      iframe.style.setProperty('min-width', '100%', 'important');
+      iframe.style.setProperty('max-width', '100%', 'important');
       iframe.style.height = '100%';
       iframe.style.border = 'none';
       iframe.style.display = 'block';
@@ -1211,10 +1237,11 @@
     const rect = anchorBtn.getBoundingClientRect();
     const margin = 10;
     const desiredWidth = getPanelDesiredWidth();
-    const clampedWidth = Math.min(desiredWidth, window.innerWidth - margin * 2);
+    const availableWidth = Math.max(260, window.innerWidth - margin * 2);
+    const clampedWidth = Math.min(desiredWidth, availableWidth);
     panel.style.setProperty('width', `${clampedWidth}px`, 'important');
-    panel.style.setProperty('min-width', `${Math.min(PANEL_MIN_WIDTH, window.innerWidth - margin * 2)}px`, 'important');
-    panel.style.setProperty('max-width', `${Math.min(PANEL_MAX_WIDTH, window.innerWidth - margin * 2)}px`, 'important');
+    panel.style.setProperty('min-width', `${Math.min(PANEL_MIN_WIDTH, availableWidth)}px`, 'important');
+    panel.style.setProperty('max-width', `${Math.min(PANEL_MAX_WIDTH, availableWidth)}px`, 'important');
 
     const panelWidth = panel.offsetWidth || desiredWidth;
     const panelHeight = panel.offsetHeight || 600;
@@ -1269,6 +1296,9 @@
 
     const panel = document.getElementById('wa-improver-options-panel');
     const anchor = document.getElementById('wa-improver-options-btn');
+    if (anchor && anchor.parentElement === document.body) {
+      positionFloatingOptionsButton(anchor);
+    }
     if (panel && anchor && panel.style.display !== 'none') {
       positionPanel(panel, anchor);
     }
@@ -1277,6 +1307,9 @@
   window.addEventListener('resize', () => {
     const panel = document.getElementById('wa-improver-options-panel');
     const anchor = document.getElementById('wa-improver-options-btn');
+    if (anchor && anchor.parentElement === document.body) {
+      positionFloatingOptionsButton(anchor);
+    }
     if (panel && anchor && panel.style.display !== 'none') {
       positionPanel(panel, anchor);
     }

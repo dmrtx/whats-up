@@ -22,7 +22,8 @@ const defaultPerformanceSettings = {
   },
   showReloadNotification: true,
   messageNavigation: {
-    enabled: true
+    enabled: true,
+    entryMode: 'alt-up'
   }
 };
 
@@ -87,8 +88,13 @@ function loadSettings() {
     
     // Message navigation
     const messageNavigationEnabled = document.getElementById('message-navigation-enabled');
+    const messageNavigationEntry = document.getElementById('message-navigation-entry');
     if (messageNavigationEnabled) {
       messageNavigationEnabled.checked = perfSettings.messageNavigation?.enabled !== false;
+    }
+    if (messageNavigationEntry) {
+      const entryMode = perfSettings.messageNavigation?.entryMode === 'up' ? 'up' : 'alt-up';
+      messageNavigationEntry.value = entryMode;
     }
     
     isLoading = false;
@@ -136,7 +142,8 @@ function saveSettings(options = {}) {
     },
     showReloadNotification: document.getElementById('show-reload-notification').checked,
     messageNavigation: {
-      enabled: document.getElementById('message-navigation-enabled').checked
+      enabled: document.getElementById('message-navigation-enabled').checked,
+      entryMode: document.getElementById('message-navigation-entry')?.value === 'up' ? 'up' : 'alt-up'
     }
   };
 

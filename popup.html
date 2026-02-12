@@ -27,7 +27,7 @@
       </div>
 
       <div class="info-box">
-        <p><strong>Quick use:</strong> Right-click a message → press your shortcut. Or press <kbd>↑</kbd>/<kbd>Esc</kbd> to navigate messages and trigger actions without right-clicking.</p>
+        <p><strong>Quick use:</strong> Right-click a message → press your shortcut. Navigation entry is configurable below (default: <kbd>⌥</kbd>+<kbd>↑</kbd>).</p>
       </div>
 
       <div class="shortcuts-section">
@@ -152,7 +152,7 @@
         <div class="shortcut-item highlight-feature">
           <div class="shortcut-info">
             <label for="message-navigation-enabled">Arrow Key Message Navigation</label>
-            <span class="description">Press ↑ or Esc to select messages and run shortcuts without right-clicking.</span>
+            <span class="description">Enable keyboard navigation for selecting messages and running shortcuts.</span>
           </div>
           <div class="shortcut-input">
             <label class="toggle">
@@ -162,8 +162,21 @@
           </div>
         </div>
 
+        <div class="shortcut-item">
+          <div class="shortcut-info">
+            <label for="message-navigation-entry">Navigation Entry Shortcut</label>
+            <span class="description">Choose safe mode or hijack plain ↑ like native edit behavior.</span>
+          </div>
+          <div class="shortcut-input">
+            <select id="message-navigation-entry">
+              <option value="alt-up" selected>⌥ + ↑ (safe default)</option>
+              <option value="up">↑ only (hijack WhatsApp ↑)</option>
+            </select>
+          </div>
+        </div>
+
         <div class="info-box compact">
-          <p><strong>How it works:</strong> <kbd>↑</kbd>/<kbd>Esc</kbd> → move <kbd>↑</kbd><kbd>↓</kbd> → press shortcut → <kbd>Esc</kbd> to exit.</p>
+          <p><strong>How it works:</strong> Entry key → move <kbd>↑</kbd><kbd>↓</kbd> → press shortcut → <kbd>Esc</kbd> to exit.</p>
         </div>
       </div>
 

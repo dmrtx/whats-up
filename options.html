@@ -140,7 +140,7 @@
         <div class="shortcut-item highlight-feature">
           <div class="shortcut-info">
             <label for="message-navigation-enabled">Arrow Key Message Navigation</label>
-            <span class="description">Press ↑ to select messages, then use shortcuts (e, r, d, etc.) without right-clicking!</span>
+            <span class="description">Enable keyboard navigation for selecting messages and running shortcuts.</span>
           </div>
           <div class="shortcut-input">
             <label class="toggle">
@@ -149,9 +149,22 @@
             </label>
           </div>
         </div>
+
+        <div class="shortcut-item">
+          <div class="shortcut-info">
+            <label for="message-navigation-entry">Navigation Entry Shortcut</label>
+            <span class="description">Choose safe mode or hijack plain ↑ like WhatsApp edit behavior.</span>
+          </div>
+          <div class="shortcut-input">
+            <select id="message-navigation-entry">
+              <option value="alt-up" selected>⌥ + ↑ (safe default)</option>
+              <option value="up">↑ only (hijack WhatsApp ↑)</option>
+            </select>
+          </div>
+        </div>
         
         <div class="info-box" style="margin-top: 15px; margin-bottom: 25px;">
-          <p>🎮 <strong>How to use:</strong> Press <kbd>↑</kbd> or <kbd>Esc</kbd> to enter navigation → Use <kbd>↑</kbd><kbd>↓</kbd> to move → Press shortcut key (e.g. <kbd>e</kbd> to edit) → <kbd>Esc</kbd> to exit</p>
+          <p>🎮 <strong>How to use:</strong> Press your selected entry key to enter navigation → Use <kbd>↑</kbd><kbd>↓</kbd> to move → Press shortcut key (e.g. <kbd>e</kbd> to edit) → <kbd>Esc</kbd> to exit</p>
         </div>
       </div>
 

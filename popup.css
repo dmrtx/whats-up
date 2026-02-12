@@ -22,7 +22,7 @@ body {
     radial-gradient(circle at 10% 10%, rgba(37, 211, 102, 0.18), transparent 45%),
     radial-gradient(circle at 80% 0%, rgba(18, 140, 126, 0.22), transparent 35%),
     linear-gradient(160deg, var(--bg-deep), var(--bg-mid));
-  width: 100%;
+  width: 540px;
   height: 100%;
   padding: 12px;
   color: var(--text);
@@ -31,11 +31,12 @@ body {
 
 html {
   height: 100%;
-  min-width: 420px;
+  width: 540px;
+  min-width: 540px;
 }
 
 body {
-  min-width: 420px;
+  min-width: 540px;
 }
 
 .container {
@@ -44,7 +45,7 @@ body {
   box-shadow: var(--shadow);
   border: 1px solid rgba(255, 255, 255, 0.2);
   overflow: hidden;
-  min-width: 396px;
+  min-width: 516px;
 }
 
 header {
@@ -376,7 +377,7 @@ select:disabled {
   color: #8c1d16;
 }
 
-@media (max-width: 420px) {
+@media (max-width: 560px) {
   html,
   body,
   .container {
