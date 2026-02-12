@@ -4,6 +4,9 @@
 (function() {
   'use strict';
 
+  if (window.__WA_IMPROVER_LOADED) return;
+  window.__WA_IMPROVER_LOADED = true;
+
   console.log('WhatsApp Web Improver: Extension loaded');
 
   let contextMenuOpen = false;
@@ -12,6 +15,7 @@
   let performanceSettings = {};
   let lastReloadCheck = null;
   let reloadNotificationShown = false;
+  let reloadNotificationCooldownUntil = 0;
   
   // Message navigation state
   let messageNavigationEnabled = false;
@@ -19,6 +23,8 @@
   let selectedMessageIndex = -1;
   let messageElements = [];
   let navigationModeEnteredAt = 0; // Timestamp to prevent immediate actions
+  let optionsButtonObserver = null;
+  let optionsButtonDebounceTimer = null;
   
   // Status + memory reporting (shared with popup/options)
   const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
@@ -140,6 +146,7 @@
   // Show reload notification banner
   function showReloadNotification(reason) {
     if (reloadNotificationShown) return;
+    if (Date.now() < reloadNotificationCooldownUntil) return;
     reloadNotificationShown = true;
 
     const banner = document.createElement('div');
@@ -210,9 +217,8 @@
 
     document.getElementById('wa-reload-later').addEventListener('click', () => {
       banner.remove();
+      reloadNotificationCooldownUntil = Date.now() + (60 * 60 * 1000);
       reloadNotificationShown = false;
-      // Don't ask again for 1 hour
-      setTimeout(() => { reloadNotificationShown = false; }, 60 * 60 * 1000);
     });
   }
 
@@ -781,29 +787,55 @@
     return null;
   }
 
+  function isTypingTarget(target) {
+    if (!(target instanceof Element)) return false;
+
+    const tagName = target.tagName;
+    if (tagName === 'INPUT' || tagName === 'TEXTAREA') return true;
+    if (target.contentEditable === 'true') return true;
+    if (target.closest('[role="textbox"], [contenteditable="true"]')) return true;
+
+    return false;
+  }
+
+  function isChatAreaTarget(target) {
+    if (!(target instanceof Element)) return false;
+
+    const inComposer = target.closest('footer, [role="textbox"], [contenteditable="true"], [data-tab="10"]');
+    if (inComposer) return false;
+
+    return Boolean(
+      target.closest(
+        '[data-testid="conversation-panel-messages"], [aria-label*="message" i], [role="application"], [data-tab="8"], main'
+      )
+    );
+  }
+
+  function canEnterNavigationMode(eventTarget) {
+    const target = eventTarget instanceof Element ? eventTarget : document.activeElement;
+    return isChatAreaTarget(target);
+  }
+
   // Listen for keypress events
   document.addEventListener('keydown', (e) => {
     const pressedKey = e.key;
     const pressedKeyLower = pressedKey.toLowerCase();
-    const isTyping = e.target.tagName === 'INPUT' || 
-                     e.target.tagName === 'TEXTAREA' || 
-                     e.target.contentEditable === 'true';
+    const isTyping = isTypingTarget(e.target);
 
     // ===== MESSAGE NAVIGATION HANDLING =====
     const navEnabled = performanceSettings.messageNavigation?.enabled !== false;
     
     // Arrow Up to enter navigation mode (only when NOT typing)
-    if (navEnabled && pressedKey === 'ArrowUp' && !messageNavigationMode && !contextMenuOpen && !isTyping) {
+    if (navEnabled && pressedKey === 'ArrowUp' && !messageNavigationMode && !contextMenuOpen && !isTyping && canEnterNavigationMode(e.target)) {
       console.log('🚀 WhatsApp Web Improver: Entering navigation mode via ArrowUp');
       e.preventDefault();
       e.stopPropagation();
-      e.stopImmediatePropagation();
       enterNavigationMode();
       return;
     }
     
     // Escape to enter navigation mode (alternative)
-    if (navEnabled && pressedKey === 'Escape' && !messageNavigationMode && !contextMenuOpen && !isTyping) {
+    if (navEnabled && pressedKey === 'Escape' && !messageNavigationMode && !contextMenuOpen && !isTyping && canEnterNavigationMode(e.target)) {
       console.log('🚀 WhatsApp Web Improver: Entering navigation mode via Escape');
       e.preventDefault();
       e.stopPropagation();
@@ -856,7 +888,6 @@
             console.log(`🎯 Triggering action: ${action}`);
             e.preventDefault();
             e.stopPropagation();
-            e.stopImmediatePropagation();
             triggerActionOnSelectedMessage(action);
             return;
           }
@@ -915,7 +946,7 @@
 
     // Find "New Chat" button by looking for the chat icon
     // This is robust across languages as it relies on the data-icon attribute
-    const chatIcon = document.querySelector('span[data-icon="chat"]');
+    const chatIcon = document.querySelector('span[data-icon="chat"], span[data-icon="new-chat-outline"], span[data-icon="new-chat"]');
     if (!chatIcon) return;
 
     const newChatBtn = chatIcon.closest('[role="button"]');
@@ -1016,16 +1047,52 @@
 
   function positionPanel(panel, anchorBtn) {
     const rect = anchorBtn.getBoundingClientRect();
-    const top = rect.bottom + 12;
-    // Align to the right of the button, but ensuring it fits in viewport
-    // WhatsApp sidebar is on the left, so we likely want it left-aligned or centered to button
-    // but constrained to the screen.
-    const left = Math.max(10, rect.left);
+    const margin = 10;
+    const panelWidth = panel.offsetWidth || 380;
+    const panelHeight = panel.offsetHeight || 600;
+
+    let left = rect.left;
+    let top = rect.bottom + 12;
+
+    if (left + panelWidth > window.innerWidth - margin) {
+      left = window.innerWidth - panelWidth - margin;
+    }
+    if (left < margin) {
+      left = margin;
+    }
+
+    if (top + panelHeight > window.innerHeight - margin) {
+      top = Math.max(margin, rect.top - panelHeight - 12);
+    }
 
     panel.style.top = `${top}px`;
     panel.style.left = `${left}px`;
   }
 
+  function scheduleInjectOptionsButton() {
+    if (optionsButtonDebounceTimer) return;
+
+    optionsButtonDebounceTimer = setTimeout(() => {
+      optionsButtonDebounceTimer = null;
+      injectOptionsButton();
+    }, 200);
+  }
+
+  function startOptionsButtonObserver() {
+    if (optionsButtonObserver || !document.body) return;
+
+    injectOptionsButton();
+
+    optionsButtonObserver = new MutationObserver(() => {
+      scheduleInjectOptionsButton();
+    });
+
+    optionsButtonObserver.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
   // Monitor for header injection (WhatsApp loads dynamically)
-  setInterval(injectOptionsButton, 2000);
+  startOptionsButtonObserver();
 })();

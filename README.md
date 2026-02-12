@@ -6,7 +6,7 @@ A Chrome extension that adds configurable keyboard shortcuts to WhatsApp Web, si
 
 - **🔧 Fully Configurable**: Customize all keyboard shortcuts to your preference
 - **⚡ Quick Actions**: Perform common actions with a single keypress
-- **🎨 Beautiful Settings UI**: Easy-to-use options page with toggle switches
+- **🎨 Beautiful Settings UI**: Easy-to-use popup dashboard with toggle switches
 - **📌 Popup Dashboard**: Manage shortcuts and performance from the extension popup (auto-saves changes)
 - **🌍 Multi-language Support**: Works with WhatsApp in different languages
 - **🚀 Lightweight**: Fast and efficient, no performance impact
@@ -66,9 +66,7 @@ A Chrome extension that adds configurable keyboard shortcuts to WhatsApp Web, si
 
 ## Icon Files
 
-The extension references icon files (icon16.png, icon48.png, icon128.png) in the manifest. You can:
-- Create custom icons at those sizes (16x16, 48x48, 128x128 pixels)
-- Or remove the `icons` section from manifest.json if you don't need them
+The project includes `icon16.png` for UI use. You can add more sizes and wire them in `manifest.json` if you want branded extension icons in Chrome.
 
 ## Browser Support
 
@@ -89,7 +87,7 @@ The extension references icon files (icon16.png, icon48.png, icon128.png) in the
 
 ### Shortcuts not triggering?
 
-1. Open the Options page and verify your shortcuts are enabled
+1. Open the extension popup and verify your shortcuts are enabled
 2. Check for duplicate key assignments
 3. Make sure you're not typing in an input field
 4. The context menu must be open for shortcuts to work
@@ -107,9 +105,9 @@ The extension references icon files (icon16.png, icon48.png, icon128.png) in the
 WhatsappImprover/
 ├── manifest.json       # Extension configuration
 ├── content.js          # Main content script (runs on WhatsApp Web)
-├── options.html        # Settings page HTML
-├── options.css         # Settings page styles
-├── options.js          # Settings page logic
+├── popup.html          # Popup dashboard HTML (also used as in-page panel)
+├── popup.css           # Popup dashboard styles
+├── options.js          # Shared settings logic for popup/dashboard
 └── README.md          # This file
 ```
 
@@ -119,7 +117,7 @@ To add a new action:
 
 1. Add the action to `defaultShortcuts` in both `content.js` and `options.js`
 2. Add keywords for the action in `actionKeywords` in `content.js`
-3. Add the UI elements in `options.html`
+3. Add the UI elements in `popup.html`
 4. Update the README
 
 ## Privacy
