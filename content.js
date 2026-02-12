@@ -25,6 +25,8 @@
   let navigationModeEnteredAt = 0; // Timestamp to prevent immediate actions
   let optionsButtonObserver = null;
   let optionsButtonDebounceTimer = null;
+  const PANEL_MIN_WIDTH = 430;
+  const PANEL_MAX_WIDTH = 560;
   
   // Status + memory reporting (shared with popup/options)
   const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
@@ -970,7 +972,81 @@
     return true;
   }
 
+  function getPanelDesiredWidth() {
+    return Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(window.innerWidth * 0.52)));
+  }
+
+  function createOptionsButton(templateButton = null) {
+    const btn = document.createElement('div');
+    btn.id = 'wa-improver-options-btn';
+    btn.setAttribute('role', 'button');
+    btn.setAttribute('title', 'WhatsApp Web Improver Settings');
+    btn.setAttribute('aria-label', 'WhatsApp Web Improver Settings');
+
+    if (templateButton?.className) {
+      btn.className = templateButton.className;
+    }
+
+    btn.innerHTML = `
+      <span data-icon="wa-improver-bolt" style="display: flex; align-items: center; justify-content: center;">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+        </svg>
+      </span>
+    `;
+
+    if (!templateButton) {
+      Object.assign(btn.style, {
+        width: '36px',
+        height: '36px',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: '18px',
+        color: 'var(--icon, #8696a0)',
+        cursor: 'pointer'
+      });
+    }
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      toggleOptionsPanel(btn);
+    });
+
+    return btn;
+  }
+
   function findHeaderAnchorButton() {
+    const sidebarHeader = document.querySelector('#side header, [data-testid="chat-list-header"], header');
+
+    if (sidebarHeader) {
+      const headerIconSelectors = [
+        'span[data-icon="chat"]',
+        'span[data-icon="new-chat"]',
+        'span[data-icon="new-chat-outline"]',
+        'span[data-icon="plus"]',
+        'span[data-icon="compose"]'
+      ];
+
+      for (const iconSelector of headerIconSelectors) {
+        const icon = sidebarHeader.querySelector(iconSelector);
+        const button = icon?.closest('[role="button"]');
+        if (isHeaderButtonCandidate(button)) return button;
+      }
+
+      const headerButtons = Array.from(sidebarHeader.querySelectorAll('[role="button"]'))
+        .filter(isHeaderButtonCandidate)
+        .sort((left, right) => left.getBoundingClientRect().left - right.getBoundingClientRect().left);
+
+      if (headerButtons.length >= 2) {
+        return headerButtons[headerButtons.length - 2];
+      }
+      if (headerButtons.length === 1) {
+        return headerButtons[0];
+      }
+    }
+
     const iconSelectors = [
       'span[data-icon="chat"]',
       'span[data-icon="new-chat"]',
@@ -994,56 +1070,34 @@
 
     if (isHeaderButtonCandidate(textButton)) return textButton;
 
-    const sidebarHeader = document.querySelector('#side header, [data-testid="chat-list-header"], header');
-    if (!sidebarHeader) return null;
-
-    const headerButtons = Array.from(sidebarHeader.querySelectorAll('[role="button"]')).filter(isHeaderButtonCandidate);
-    if (headerButtons.length === 0) return null;
-
-    return headerButtons[0];
+    return null;
   }
 
   function injectOptionsButton() {
     if (document.getElementById('wa-improver-options-btn')) return;
 
     const newChatBtn = findHeaderAnchorButton();
-    if (!newChatBtn) return;
+    if (newChatBtn) {
+      const headerContainer = newChatBtn.parentElement;
+      if (headerContainer) {
+        const btn = createOptionsButton(newChatBtn);
+        headerContainer.insertBefore(btn, newChatBtn);
+        console.log('WhatsApp Web Improver: Options button injected near header action');
+        return;
+      }
+    }
 
-    const headerContainer = newChatBtn.parentElement;
-    if (!headerContainer) return;
+    const sidebarHeader = document.querySelector('#side header, [data-testid="chat-list-header"], header');
+    if (!sidebarHeader) return;
 
-    // Create our button
-    const btn = document.createElement('div');
-    btn.id = 'wa-improver-options-btn';
-    btn.setAttribute('role', 'button');
-    btn.setAttribute('title', 'WhatsApp Web Improver Settings');
-    btn.setAttribute('aria-label', 'WhatsApp Web Improver Settings');
-
-    // Copy classes from New Chat button to match WhatsApp style (hover effects, size)
-    btn.className = newChatBtn.className;
-
-    // Inner HTML with a Bolt icon ⚡
-    btn.innerHTML = `
-      <span data-icon="wa-improver-bolt" style="display: flex; align-items: center; justify-content: center;">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
-        </svg>
-      </span>
-    `;
-
-    // Add specific style to ensure icon color matches theme
-    // WhatsApp usually sets color on the svg or path.
-    // We'll set generic currentColor and let it inherit.
-
-    // Insert before the New Chat button
-    headerContainer.insertBefore(btn, newChatBtn);
-
-    // Add click listener
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      toggleOptionsPanel(btn);
+    const actionsRow = Array.from(sidebarHeader.querySelectorAll('div')).find((element) => {
+      return element.querySelectorAll(':scope > [role="button"]').length >= 1;
     });
+
+    if (!actionsRow) return;
+
+    const btn = createOptionsButton();
+    actionsRow.prepend(btn);
 
     console.log('WhatsApp Web Improver: Options button injected');
   }
@@ -1068,7 +1122,7 @@
       Object.assign(panel.style, {
         position: 'fixed',
         zIndex: '999999',
-        width: `${Math.min(460, Math.max(340, Math.round(window.innerWidth * 0.42)))}px`,
+        width: `${getPanelDesiredWidth()}px`,
         height: '600px',
         maxHeight: '80vh',
         boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
@@ -1105,7 +1159,7 @@
   function positionPanel(panel, anchorBtn) {
     const rect = anchorBtn.getBoundingClientRect();
     const margin = 10;
-    const desiredWidth = Math.min(460, Math.max(340, Math.round(window.innerWidth * 0.42)));
+    const desiredWidth = getPanelDesiredWidth();
     panel.style.width = `${Math.min(desiredWidth, window.innerWidth - margin * 2)}px`;
 
     const panelWidth = panel.offsetWidth || desiredWidth;

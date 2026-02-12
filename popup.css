@@ -31,6 +31,11 @@ body {
 
 html {
   height: 100%;
+  min-width: 420px;
+}
+
+body {
+  min-width: 420px;
 }
 
 .container {
@@ -39,6 +44,7 @@ html {
   box-shadow: var(--shadow);
   border: 1px solid rgba(255, 255, 255, 0.2);
   overflow: hidden;
+  min-width: 396px;
 }
 
 header {
@@ -371,6 +377,12 @@ select:disabled {
 }
 
 @media (max-width: 420px) {
+  html,
+  body,
+  .container {
+    min-width: 0;
+  }
+
   body {
     width: 100%;
   }
