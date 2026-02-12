@@ -547,22 +547,12 @@
     
     // Find the message bubble/container to right-click on
     const targetElement = msg.querySelector('[data-pre-plain-text]') || 
-                          msg.querySelector('[class*="copyable-text"]') ||
-                          msg;
+                msg.querySelector('[class*="copyable-text"]') ||
+                msg;
     
     console.log(`🎯 WhatsApp Web Improver: Triggering "${action}" on selected message`, targetElement);
     
-    // Create and dispatch right-click event to open context menu
-    const rightClickEvent = new MouseEvent('contextmenu', {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      button: 2,
-      clientX: targetElement.getBoundingClientRect().x + 50,
-      clientY: targetElement.getBoundingClientRect().y + 20
-    });
-    
-    targetElement.dispatchEvent(rightClickEvent);
+    openContextMenuForMessageElement(targetElement);
     
     // Wait for context menu to appear, then trigger action
     waitForContextMenu((menu) => {
@@ -572,7 +562,7 @@
         console.log('❌ Context menu did not open');
       }
       exitNavigationMode();
-    });
+    }, 12, 120);
     
     return true;
   }
@@ -677,6 +667,38 @@
     }
     
     setTimeout(() => waitForContextMenu(callback, attempts - 1, delayMs), delayMs);
+  }
+
+  function dispatchRightClickSequence(targetElement, x, y) {
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      button: 2,
+      buttons: 2,
+      clientX: x,
+      clientY: y
+    };
+
+    targetElement.dispatchEvent(new PointerEvent('pointerdown', { ...base, pointerType: 'mouse' }));
+    targetElement.dispatchEvent(new MouseEvent('mousedown', base));
+    targetElement.dispatchEvent(new MouseEvent('mouseup', base));
+    targetElement.dispatchEvent(new MouseEvent('contextmenu', base));
+  }
+
+  function openContextMenuForMessageElement(messageElement) {
+    if (!messageElement) return;
+
+    messageElement.scrollIntoView({ behavior: 'auto', block: 'center' });
+    const rect = messageElement.getBoundingClientRect();
+
+    if (!rect.width || !rect.height) return;
+
+    const x = Math.round(rect.left + Math.min(48, Math.max(12, rect.width * 0.25)));
+    const y = Math.round(rect.top + Math.max(12, rect.height * 0.5));
+    const topMost = document.elementFromPoint(x, y) || messageElement;
+
+    dispatchRightClickSequence(topMost, x, y);
   }
               
   // Detect when context menu opens
@@ -941,15 +963,50 @@
 
   // ===== HEADER OPTIONS BUTTON =====
 
+  function isHeaderButtonCandidate(button) {
+    if (!button) return false;
+    if (!isElementVisible(button)) return false;
+    if (button.id === 'wa-improver-options-btn') return false;
+    return true;
+  }
+
+  function findHeaderAnchorButton() {
+    const iconSelectors = [
+      'span[data-icon="chat"]',
+      'span[data-icon="new-chat"]',
+      'span[data-icon="new-chat-outline"]',
+      'span[data-icon="plus"]',
+      'span[data-icon="compose"]'
+    ];
+
+    for (const iconSelector of iconSelectors) {
+      const icon = document.querySelector(iconSelector);
+      const button = icon?.closest('[role="button"]');
+      if (isHeaderButtonCandidate(button)) return button;
+    }
+
+    const ariaButtons = Array.from(document.querySelectorAll('[role="button"][aria-label], [role="button"][title]'));
+    const newChatRegex = /(new\s*chat|nuevo\s*chat|nueva\s*conversaci[oó]n|nouvelle\s*discussion|nuova\s*chat|neuer\s*chat|iniciar\s*chat|start\s*chat)/i;
+    const textButton = ariaButtons.find((button) => {
+      const label = `${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''}`;
+      return newChatRegex.test(label);
+    });
+
+    if (isHeaderButtonCandidate(textButton)) return textButton;
+
+    const sidebarHeader = document.querySelector('#side header, [data-testid="chat-list-header"], header');
+    if (!sidebarHeader) return null;
+
+    const headerButtons = Array.from(sidebarHeader.querySelectorAll('[role="button"]')).filter(isHeaderButtonCandidate);
+    if (headerButtons.length === 0) return null;
+
+    return headerButtons[0];
+  }
+
   function injectOptionsButton() {
     if (document.getElementById('wa-improver-options-btn')) return;
 
-    // Find "New Chat" button by looking for the chat icon
-    // This is robust across languages as it relies on the data-icon attribute
-    const chatIcon = document.querySelector('span[data-icon="chat"], span[data-icon="new-chat-outline"], span[data-icon="new-chat"]');
-    if (!chatIcon) return;
-
-    const newChatBtn = chatIcon.closest('[role="button"]');
+    const newChatBtn = findHeaderAnchorButton();
     if (!newChatBtn) return;
 
     const headerContainer = newChatBtn.parentElement;
@@ -1011,7 +1068,7 @@
       Object.assign(panel.style, {
         position: 'fixed',
         zIndex: '999999',
-        width: '380px',
+        width: `${Math.min(460, Math.max(340, Math.round(window.innerWidth * 0.42)))}px`,
         height: '600px',
         maxHeight: '80vh',
         boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
@@ -1048,7 +1105,10 @@
   function positionPanel(panel, anchorBtn) {
     const rect = anchorBtn.getBoundingClientRect();
     const margin = 10;
-    const panelWidth = panel.offsetWidth || 380;
+    const desiredWidth = Math.min(460, Math.max(340, Math.round(window.innerWidth * 0.42)));
+    panel.style.width = `${Math.min(desiredWidth, window.innerWidth - margin * 2)}px`;
+
+    const panelWidth = panel.offsetWidth || desiredWidth;
     const panelHeight = panel.offsetHeight || 600;
 
     let left = rect.left;
@@ -1095,4 +1155,22 @@
 
   // Monitor for header injection (WhatsApp loads dynamically)
   startOptionsButtonObserver();
+
+  setInterval(() => {
+    injectOptionsButton();
+
+    const panel = document.getElementById('wa-improver-options-panel');
+    const anchor = document.getElementById('wa-improver-options-btn');
+    if (panel && anchor && panel.style.display !== 'none') {
+      positionPanel(panel, anchor);
+    }
+  }, 6000);
+
+  window.addEventListener('resize', () => {
+    const panel = document.getElementById('wa-improver-options-panel');
+    const anchor = document.getElementById('wa-improver-options-btn');
+    if (panel && anchor && panel.style.display !== 'none') {
+      positionPanel(panel, anchor);
+    }
+  });
 })();
