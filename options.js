@@ -353,6 +353,9 @@ function loadMemoryStatus() {
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   isPopupView = document.body?.dataset?.view === 'popup';
+  const isEmbedded = window.self !== window.top;
+  document.body.classList.toggle('embedded-view', isEmbedded);
+  document.documentElement.classList.toggle('embedded-view', isEmbedded);
   
   loadSettings();
   setupToggleListeners();

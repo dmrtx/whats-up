@@ -26,12 +26,18 @@
   let navigationActionInProgress = false;
   let optionsButtonObserver = null;
   let optionsButtonDebounceTimer = null;
-  const PANEL_MIN_WIDTH = 720;
-  const PANEL_MAX_WIDTH = 980;
+  const PANEL_MIN_WIDTH = 360;
+  const PANEL_MAX_WIDTH = 520;
   const UI_SCALE_STORAGE_KEY = 'waImproverUiScale';
   const UI_SCALE_MIN = 85;
   const UI_SCALE_MAX = 130;
   const UI_SCALE_STEP = 5;
+  const GIF_COMMAND_PREFIX = '/gif ';
+  const GIF_PICKER_ID = 'wa-improver-gif-picker';
+  const GIF_INDICATOR_ID = 'wa-improver-gif-indicator';
+  const GIF_LIMIT = 8;
+  const TENOR_PUBLIC_KEY = 'LIVDSRZULELA';
+  const TENOR_SEARCH_URL = 'https://g.tenor.com/v1/search';
   
   // Status + memory reporting (shared with popup/options)
   const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
@@ -40,6 +46,12 @@
   let lastMemoryReportAt = 0;
   let currentUiScale = 100;
   let extensionContextInvalid = false;
+  let gifPickerVisible = false;
+  let gifPickerResults = [];
+  let gifPickerSelectedIndex = 0;
+  let gifPickerComposer = null;
+  let gifIndicatorComposer = null;
+  let gifSendInProgress = false;
 
   function clampUiScale(value) {
     const numeric = Number(value);
@@ -542,6 +554,583 @@
       }
     `;
     document.head.appendChild(styles);
+  }
+
+  function injectGifPickerStyles() {
+    if (document.getElementById('wa-improver-gif-styles')) return;
+
+    const styles = document.createElement('style');
+    styles.id = 'wa-improver-gif-styles';
+    styles.textContent = `
+      #${GIF_PICKER_ID} {
+        position: fixed;
+        z-index: 999999;
+        width: 420px;
+        max-width: calc(100vw - 24px);
+        background: #101a16;
+        color: #f2f8f5;
+        border: 1px solid rgba(37, 211, 102, 0.35);
+        border-radius: 12px;
+        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+        padding: 10px;
+      }
+      #${GIF_PICKER_ID} .wa-gif-title {
+        font-size: 12px;
+        font-weight: 700;
+        opacity: 0.95;
+      }
+      #${GIF_PICKER_ID} .wa-gif-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      #${GIF_PICKER_ID} .wa-gif-close {
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.08);
+        color: #f2f8f5;
+        border-radius: 6px;
+        padding: 3px 8px;
+        cursor: pointer;
+        font-size: 11px;
+      }
+      #${GIF_PICKER_ID} .wa-gif-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+      #${GIF_PICKER_ID} .wa-gif-item {
+        border: 2px solid transparent;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #0f2720;
+        padding: 0;
+        cursor: pointer;
+        line-height: 0;
+      }
+      #${GIF_PICKER_ID} .wa-gif-item.selected {
+        border-color: #25D366;
+      }
+      #${GIF_PICKER_ID} .wa-gif-item img {
+        width: 100%;
+        height: 94px;
+        object-fit: cover;
+        display: block;
+      }
+      #${GIF_PICKER_ID} .wa-gif-empty {
+        font-size: 12px;
+        color: #d8e7de;
+        opacity: 0.9;
+      }
+      #${GIF_PICKER_ID} .wa-gif-hint {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #b9ccc1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      #${GIF_PICKER_ID} .wa-gif-count {
+        color: #d8eee3;
+        font-weight: 700;
+      }
+      @media (max-width: 380px) {
+        #${GIF_PICKER_ID} .wa-gif-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      #${GIF_INDICATOR_ID} {
+        position: fixed;
+        z-index: 999999;
+        max-width: min(380px, calc(100vw - 24px));
+        background: rgba(16, 26, 22, 0.96);
+        color: #edf7f2;
+        border: 1px solid rgba(37, 211, 102, 0.45);
+        border-radius: 999px;
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.15px;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      #${GIF_INDICATOR_ID}.ready {
+        border-color: rgba(37, 211, 102, 0.8);
+      }
+    `;
+    document.head.appendChild(styles);
+  }
+
+  function getComposerFromTarget(target) {
+    if (!(target instanceof Element)) return null;
+    return target.closest('[contenteditable="true"][role="textbox"], [contenteditable="true"][data-tab="10"], footer [contenteditable="true"]');
+  }
+
+  function getActiveComposer() {
+    const focused = getComposerFromTarget(document.activeElement);
+    if (focused) return focused;
+
+    const candidates = Array.from(document.querySelectorAll('footer [contenteditable="true"], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-tab="10"]'));
+    for (const candidate of candidates) {
+      if (isElementVisible(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  function isSendButtonTarget(target) {
+    if (!(target instanceof Element)) return false;
+    const button = target.closest('[role="button"], button');
+    if (!button) return false;
+
+    if (button.querySelector('span[data-icon="send"]')) return true;
+
+    const label = (button.getAttribute('aria-label') || '').toLowerCase();
+    const testId = (button.getAttribute('data-testid') || '').toLowerCase();
+    return label.includes('send') || testId.includes('send');
+  }
+
+  function handleGifCommandInvocation(composer, event) {
+    if (!composer) return false;
+    const draft = parseGifDraft(getComposerText(composer));
+    if (!draft.isCommand) return false;
+
+    event?.preventDefault();
+    event?.stopPropagation();
+    event?.stopImmediatePropagation?.();
+
+    if (!draft.query) {
+      showGifCommandIndicator(composer, draft);
+      return true;
+    }
+
+    setComposerText(composer, '');
+    openNativeGifPanelWithQuery(draft.query);
+
+    return true;
+  }
+
+  function dispatchKeyboardShortcut(key, options = {}) {
+    const target = document.activeElement || document.body;
+    const eventInit = {
+      key,
+      code: `Key${key.toUpperCase()}`,
+      bubbles: true,
+      cancelable: true,
+      ...options
+    };
+
+    target.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+    target.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+  }
+
+  function clickVisibleElement(element) {
+    if (!element || !isElementVisible(element)) return false;
+    element.click();
+    return true;
+  }
+
+  function openGifPanelByClickFallback() {
+    const footer = document.querySelector('footer');
+    if (!footer) return false;
+
+    const emojiCandidates = [
+      footer.querySelector('[aria-label*="emoji" i]'),
+      footer.querySelector('[data-testid*="emoji"]'),
+      footer.querySelector('span[data-icon="smiley"]')?.closest('[role="button"], button')
+    ].filter(Boolean);
+
+    for (const candidate of emojiCandidates) {
+      if (clickVisibleElement(candidate.closest('[role="button"], button') || candidate)) {
+        break;
+      }
+    }
+
+    const gifTabSelectors = [
+      '[role="tab"][aria-label*="gif" i]',
+      '[aria-label*="gif" i]',
+      'button[title*="gif" i]',
+      '[data-testid*="gif"]'
+    ];
+
+    for (const selector of gifTabSelectors) {
+      const nodes = Array.from(document.querySelectorAll(selector)).filter(isElementVisible);
+      const gifNode = nodes.find((node) => /gif/i.test(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title') || ''));
+      if (gifNode && clickVisibleElement(gifNode.closest('[role="button"], button, [role="tab"]') || gifNode)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function findNativeGifSearchField() {
+    const strictSelectors = [
+      'input[name*="GIPHY" i]',
+      'input[aria-label*="GIPHY" i]',
+      'input[placeholder*="GIPHY" i]',
+      '[role="dialog"] input[name*="GIPHY" i]',
+      '[role="dialog"] input[aria-label*="GIPHY" i]',
+      '[role="dialog"] input[placeholder*="GIPHY" i]'
+    ];
+
+    for (const selector of strictSelectors) {
+      const nodes = Array.from(document.querySelectorAll(selector)).filter((node) => {
+        if (!isElementVisible(node)) return false;
+        if (node.closest('footer')) return false;
+        return true;
+      });
+      if (nodes.length > 0) return nodes[0];
+    }
+
+    return null;
+  }
+
+  function setSearchFieldText(field, text) {
+    if (!field) return false;
+
+    if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+      field.click();
+      field.focus();
+      field.select?.();
+
+      // Use native setter so controlled inputs (React-like) pick it up.
+      const prototype = field instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (valueSetter) {
+        valueSetter.call(field, text);
+      } else {
+        field.value = text;
+      }
+
+      field.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        inputType: 'insertText',
+        data: text
+      }));
+      field.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      return true;
+    }
+
+    field.focus();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(field);
+    range.deleteContents();
+    const textNode = document.createTextNode(text);
+    range.insertNode(textNode);
+    range.setStartAfter(textNode);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    return true;
+  }
+
+  function waitForNativeGifSearchField(maxAttempts = 20, delayMs = 120) {
+    return new Promise((resolve) => {
+      let attempts = maxAttempts;
+      const tick = () => {
+        const field = findNativeGifSearchField();
+        if (field) {
+          resolve(field);
+          return;
+        }
+        attempts -= 1;
+        if (attempts <= 0) {
+          resolve(null);
+          return;
+        }
+        setTimeout(tick, delayMs);
+      };
+      tick();
+    });
+  }
+
+  function getSearchFieldText(field) {
+    if (!field) return '';
+    if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+      return (field.value || '').trim();
+    }
+    return (field.innerText || field.textContent || '').trim();
+  }
+
+  function openNativeGifPanelWithQuery(query) {
+    hideGifCommandIndicator();
+    closeGifPicker();
+    
+    // Open GIF panel via UI flow first to avoid focusing global chat search.
+    openGifPanelByClickFallback();
+
+    waitForNativeGifSearchField(20, 140).then((field) => {
+      if (!field) {
+        // Try shortcuts only as fallback and still require strict GIPHY input.
+        dispatchKeyboardShortcut('g', { ctrlKey: true });
+        dispatchKeyboardShortcut('g', { metaKey: true });
+        return waitForNativeGifSearchField(10, 140);
+      }
+      return field;
+    }).then((field) => {
+      if (!field) {
+        console.warn('WhatsApp Web Improver: Native GIF search field not found (strict GIPHY selector)');
+        return;
+      }
+
+      setSearchFieldText(field, query);
+      setTimeout(() => {
+        if (!getSearchFieldText(field)) {
+          setSearchFieldText(field, query);
+        }
+      }, 180);
+    });
+  }
+
+  function getComposerText(composer) {
+    if (!composer) return '';
+    const raw = (composer.innerText || composer.textContent || '').replace(/\u00A0/g, ' ');
+    return raw.trim();
+  }
+
+  function parseGifDraft(text) {
+    const normalized = (text || '').trim();
+    if (!normalized) return { isCommand: false, query: '' };
+    if (!normalized.toLowerCase().startsWith('/gif')) return { isCommand: false, query: '' };
+
+    const parts = normalized.split(/\s+/);
+    if (parts[0].toLowerCase() !== '/gif') return { isCommand: false, query: '' };
+    const query = normalized.slice(parts[0].length).trim();
+    return { isCommand: true, query };
+  }
+
+  function parseGifCommand(text) {
+    if (!text) return null;
+    const draft = parseGifDraft(text);
+    if (!draft.isCommand) return null;
+    const query = draft.query;
+    return query || null;
+  }
+
+  function getOrCreateGifIndicator() {
+    let indicator = document.getElementById(GIF_INDICATOR_ID);
+    if (indicator) return indicator;
+
+    indicator = document.createElement('div');
+    indicator.id = GIF_INDICATOR_ID;
+    document.body.appendChild(indicator);
+    return indicator;
+  }
+
+  function positionGifIndicator(indicator, composer) {
+    if (!indicator || !composer) return;
+    const rect = composer.getBoundingClientRect();
+    const top = Math.max(10, rect.top - 42);
+    const left = Math.max(12, Math.min(window.innerWidth - indicator.offsetWidth - 12, rect.left));
+    indicator.style.top = `${top}px`;
+    indicator.style.left = `${left}px`;
+  }
+
+  function hideGifCommandIndicator() {
+    const indicator = document.getElementById(GIF_INDICATOR_ID);
+    if (indicator) indicator.remove();
+    gifIndicatorComposer = null;
+  }
+
+  function showGifCommandIndicator(composer, draft) {
+    if (!composer || !draft?.isCommand) {
+      hideGifCommandIndicator();
+      return;
+    }
+
+    injectGifPickerStyles();
+    const indicator = getOrCreateGifIndicator();
+    gifIndicatorComposer = composer;
+    indicator.classList.remove('ready');
+
+    if (!draft.query) {
+      indicator.textContent = '/gif detectado. Escribe el texto a buscar.';
+    } else {
+      indicator.textContent = `/gif listo: "${draft.query}" (Enter para buscar)`;
+      indicator.classList.add('ready');
+    }
+
+    positionGifIndicator(indicator, composer);
+  }
+
+  function closeGifPicker() {
+    const picker = document.getElementById(GIF_PICKER_ID);
+    if (picker) picker.remove();
+    gifPickerVisible = false;
+    gifPickerResults = [];
+    gifPickerSelectedIndex = 0;
+    gifPickerComposer = null;
+  }
+
+  function updateGifPickerSelection() {
+    const picker = document.getElementById(GIF_PICKER_ID);
+    if (!picker) return;
+    picker.querySelectorAll('.wa-gif-item').forEach((button, index) => {
+      button.classList.toggle('selected', index === gifPickerSelectedIndex);
+    });
+    const counter = picker.querySelector('.wa-gif-count');
+    if (counter && gifPickerResults.length > 0) {
+      counter.textContent = `${gifPickerSelectedIndex + 1}/${gifPickerResults.length}`;
+    }
+  }
+
+  function positionGifPicker(picker, composer) {
+    if (!picker || !composer) return;
+    const composerRect = composer.getBoundingClientRect();
+    const width = Math.min(420, window.innerWidth - 24);
+    const left = Math.max(12, Math.min(window.innerWidth - width - 12, composerRect.left));
+    const top = Math.max(12, composerRect.top - 340);
+    picker.style.width = `${width}px`;
+    picker.style.left = `${left}px`;
+    picker.style.top = `${top}px`;
+  }
+
+  function setComposerText(composer, text) {
+    if (!composer) return;
+    composer.focus();
+    const selection = window.getSelection();
+    if (!selection) return;
+
+    const range = document.createRange();
+    range.selectNodeContents(composer);
+    range.deleteContents();
+
+    const textNode = document.createTextNode(text);
+    range.insertNode(textNode);
+    range.setStartAfter(textNode);
+    range.collapse(true);
+
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  }
+
+  function clickSendComposerMessage(composer) {
+    const footer = composer?.closest('footer') || document.querySelector('footer');
+    const sendIcon = footer?.querySelector('span[data-icon="send"]');
+    const sendButton = sendIcon?.closest('[role="button"], button') || footer?.querySelector('[aria-label*="send" i], [data-testid*="send"]');
+    if (sendButton) {
+      sendButton.click();
+      return true;
+    }
+    return false;
+  }
+
+  function sendGifResult(result) {
+    if (gifSendInProgress) return;
+    if (!gifPickerComposer || !result?.itemurl) {
+      closeGifPicker();
+      return;
+    }
+
+    gifSendInProgress = true;
+    setComposerText(gifPickerComposer, result.itemurl);
+    requestAnimationFrame(() => {
+      clickSendComposerMessage(gifPickerComposer);
+      setTimeout(() => {
+        gifSendInProgress = false;
+      }, 500);
+    });
+    closeGifPicker();
+  }
+
+  async function searchGifResults(query) {
+    const requestUrl = `${TENOR_SEARCH_URL}?q=${encodeURIComponent(query)}&key=${TENOR_PUBLIC_KEY}&limit=${GIF_LIMIT}&media_filter=minimal`;
+    const response = await fetch(requestUrl);
+    if (!response.ok) {
+      throw new Error(`GIF search failed (${response.status})`);
+    }
+    const payload = await response.json();
+    return Array.isArray(payload?.results) ? payload.results : [];
+  }
+
+  function openGifPicker(composer, query, results, loading = false) {
+    injectGifPickerStyles();
+    closeGifPicker();
+    hideGifCommandIndicator();
+
+    const picker = document.createElement('div');
+    picker.id = GIF_PICKER_ID;
+
+    if (loading) {
+      picker.innerHTML = `
+        <div class="wa-gif-header">
+          <div class="wa-gif-title">/gif ${query}</div>
+          <button type="button" class="wa-gif-close">Cerrar</button>
+        </div>
+        <div class="wa-gif-empty">Buscando GIFs...</div>
+      `;
+      document.body.appendChild(picker);
+      picker.querySelector('.wa-gif-close')?.addEventListener('click', () => closeGifPicker());
+      positionGifPicker(picker, composer);
+      gifPickerVisible = true;
+      gifPickerComposer = composer;
+      return;
+    }
+
+    if (!results.length) {
+      picker.innerHTML = `
+        <div class="wa-gif-header">
+          <div class="wa-gif-title">/gif ${query}</div>
+          <button type="button" class="wa-gif-close">Cerrar</button>
+        </div>
+        <div class="wa-gif-empty">No se encontraron GIFs.</div>
+      `;
+      document.body.appendChild(picker);
+      picker.querySelector('.wa-gif-close')?.addEventListener('click', () => closeGifPicker());
+      positionGifPicker(picker, composer);
+      gifPickerVisible = true;
+      gifPickerComposer = composer;
+      return;
+    }
+
+    picker.innerHTML = `
+      <div class="wa-gif-header">
+        <div class="wa-gif-title">/gif ${query}</div>
+        <button type="button" class="wa-gif-close">Cerrar</button>
+      </div>
+      <div class="wa-gif-grid"></div>
+      <div class="wa-gif-hint">
+        <span>Enter enviar, flechas mover, Esc cerrar</span>
+        <span class="wa-gif-count">1/${results.length}</span>
+      </div>
+    `;
+
+    const grid = picker.querySelector('.wa-gif-grid');
+    results.forEach((result, index) => {
+      const previewUrl = result?.media?.[0]?.tinygif?.url || result?.media?.[0]?.nanogif?.url || result?.media?.[0]?.gif?.url;
+      if (!previewUrl) return;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `wa-gif-item${index === 0 ? ' selected' : ''}`;
+      button.setAttribute('aria-label', `GIF ${index + 1}`);
+      button.innerHTML = `<img src="${previewUrl}" alt="GIF ${index + 1}" loading="lazy">`;
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        sendGifResult(result);
+      });
+      grid?.appendChild(button);
+    });
+
+    document.body.appendChild(picker);
+    picker.querySelector('.wa-gif-close')?.addEventListener('click', () => closeGifPicker());
+    positionGifPicker(picker, composer);
+    gifPickerVisible = true;
+    gifPickerResults = results;
+    gifPickerSelectedIndex = 0;
+    gifPickerComposer = composer;
   }
   
   // Get all visible message elements
@@ -1310,6 +1899,49 @@
     const pressedKey = e.key;
     const pressedKeyLower = pressedKey.toLowerCase();
     const isTyping = isTypingTarget(e.target);
+    const composerTarget = getComposerFromTarget(e.target) || getComposerFromTarget(document.activeElement);
+
+    if (gifPickerVisible) {
+      if (pressedKey === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeGifPicker();
+        return;
+      }
+
+      if ((pressedKey === 'ArrowRight' || pressedKey === 'ArrowDown') && gifPickerResults.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        gifPickerSelectedIndex = (gifPickerSelectedIndex + 1) % gifPickerResults.length;
+        updateGifPickerSelection();
+        return;
+      }
+
+      if ((pressedKey === 'ArrowLeft' || pressedKey === 'ArrowUp') && gifPickerResults.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        gifPickerSelectedIndex = (gifPickerSelectedIndex - 1 + gifPickerResults.length) % gifPickerResults.length;
+        updateGifPickerSelection();
+        return;
+      }
+
+      if (pressedKey === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const selected = gifPickerResults[gifPickerSelectedIndex];
+        if (selected) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          sendGifResult(selected);
+          return;
+        }
+      }
+    }
+
+    if (composerTarget && pressedKey === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (handleGifCommandInvocation(composerTarget, e)) {
+        return;
+      }
+    }
 
     // ===== MESSAGE NAVIGATION HANDLING =====
     if (contextMenuOpen && !ensureContextMenuOpen()) {
@@ -1419,10 +2051,70 @@
     }
   }, true);
 
+  // Safety net: some builds may submit from keypress listeners
+  document.addEventListener('keypress', (e) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    const composerTarget = getComposerFromTarget(e.target) || getComposerFromTarget(document.activeElement);
+    if (!composerTarget) return;
+    const draft = parseGifDraft(getComposerText(composerTarget));
+    if (!draft.isCommand) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+  }, true);
+
+  document.addEventListener('mousedown', (e) => {
+    if (!isSendButtonTarget(e.target)) return;
+    const composer = getActiveComposer();
+    handleGifCommandInvocation(composer, e);
+  }, true);
+
   // Also exit navigation mode when clicking anywhere
-  document.addEventListener('click', () => {
+  document.addEventListener('click', (event) => {
+    if (gifPickerVisible) {
+      const picker = document.getElementById(GIF_PICKER_ID);
+      const clickedInsidePicker = picker?.contains(event.target);
+      const clickedComposer = gifPickerComposer?.contains(event.target);
+      if (!clickedInsidePicker && !clickedComposer) {
+        closeGifPicker();
+      }
+    }
+    
+    if (gifIndicatorComposer && !gifIndicatorComposer.contains(event.target)) {
+      hideGifCommandIndicator();
+    }
+
     if (messageNavigationMode && !navigationActionInProgress) {
       exitNavigationMode();
+    }
+  }, true);
+
+  window.addEventListener('resize', () => {
+    if (gifPickerVisible) {
+      const picker = document.getElementById(GIF_PICKER_ID);
+      if (picker && gifPickerComposer) {
+        positionGifPicker(picker, gifPickerComposer);
+      }
+    }
+
+    const indicator = document.getElementById(GIF_INDICATOR_ID);
+    if (indicator && gifIndicatorComposer) {
+      positionGifIndicator(indicator, gifIndicatorComposer);
+    }
+  });
+
+  document.addEventListener('input', (event) => {
+    const composer = getComposerFromTarget(event.target);
+    if (!composer) {
+      hideGifCommandIndicator();
+      return;
+    }
+
+    const draft = parseGifDraft(getComposerText(composer));
+    if (draft.isCommand) {
+      showGifCommandIndicator(composer, draft);
+    } else if (!gifPickerVisible) {
+      hideGifCommandIndicator();
     }
   }, true);
 
@@ -1444,7 +2136,7 @@
   }
 
   function getPanelDesiredWidth() {
-    return Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(window.innerWidth * 0.58)));
+    return Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(window.innerWidth * 0.35)));
   }
 
   function ensureInjectedUiStyles() {
@@ -1817,8 +2509,8 @@
         width: `${getPanelDesiredWidth()}px`,
         minWidth: `${PANEL_MIN_WIDTH}px`,
         maxWidth: `${PANEL_MAX_WIDTH}px`,
-        height: '600px',
-        maxHeight: '80vh',
+        height: '640px',
+        maxHeight: '92vh',
         boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
         border: '1px solid rgba(255,255,255,0.1)',
         borderRadius: '12px',

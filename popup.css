@@ -22,22 +22,27 @@ body {
     radial-gradient(circle at 10% 10%, rgba(37, 211, 102, 0.18), transparent 45%),
     radial-gradient(circle at 80% 0%, rgba(18, 140, 126, 0.22), transparent 35%),
     linear-gradient(160deg, var(--bg-deep), var(--bg-mid));
-  width: 100%;
-  height: 100%;
-  min-height: 100vh;
-  padding: 14px;
+  width: 390px;
+  height: 620px;
+  padding: 10px;
   color: var(--text);
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 html {
-  height: 100%;
-  width: 100%;
-  min-width: 0;
+  width: 390px;
+  height: 620px;
 }
 
-body {
-  min-width: 0;
+body.embedded-view {
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+}
+
+html.embedded-view {
+  width: 100%;
+  height: 100%;
 }
 
 .container {
@@ -47,9 +52,15 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.2);
   overflow: hidden;
   width: 100%;
-  min-width: 0;
-  max-width: 980px;
-  margin: 0 auto;
+  height: 100%;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+body.embedded-view .container {
+  border-radius: 14px;
 }
 
 header {
@@ -77,10 +88,16 @@ header h1 {
 }
 
 main {
-  padding: 18px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .status-card {
@@ -167,6 +184,50 @@ main {
   margin-bottom: 12px;
 }
 
+.shortcuts-section h2,
+.performance-section h2 {
+  display: none;
+}
+
+.panel {
+  border: 1px solid #e2ece7;
+  border-radius: 10px;
+  background: #fafcfb;
+  overflow: hidden;
+}
+
+.panel summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  color: #29433a;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #f3faf7, #edf6f2);
+  border-bottom: 1px solid #deebe4;
+}
+
+.panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel summary::after {
+  content: '▾';
+  float: right;
+  color: #4a655c;
+}
+
+.panel[open] summary::after {
+  content: '▴';
+}
+
+.panel .shortcuts-section,
+.panel .performance-section {
+  padding: 10px;
+}
+
 .shortcut-item {
   display: flex;
   justify-content: space-between;
@@ -176,7 +237,7 @@ main {
   border-radius: 10px;
   background: #f7f9f8;
   border: 1px solid #eef2f0;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .shortcut-info {
@@ -383,13 +444,9 @@ select:disabled {
 
 @media (max-width: 560px) {
   html,
-  body,
-  .container {
-    min-width: 0;
-  }
-
   body {
-    width: 100%;
+    width: 360px;
+    height: 600px;
   }
 
   .shortcut-item {
@@ -404,19 +461,5 @@ select:disabled {
 
   .button-group {
     flex-direction: column;
-  }
-}
-
-@media (min-width: 900px) {
-  body {
-    padding: 18px;
-  }
-
-  .shortcut-item {
-    padding: 14px;
-  }
-
-  .shortcut-info label {
-    font-size: 14px;
   }
 }

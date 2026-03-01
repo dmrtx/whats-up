@@ -10,6 +10,7 @@
     "128": "icon128.png"
   },
   "permissions": ["storage"],
+  "host_permissions": ["https://g.tenor.com/*"],
   "action": {
     "default_title": "WhatsApp Web Improver",
     "default_icon": {
