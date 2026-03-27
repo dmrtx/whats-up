@@ -25,7 +25,7 @@
   "content_scripts": [
     {
       "matches": ["https://web.whatsapp.com/*"],
-      "js": ["content.js"],
+      "js": ["compat/whatsapp-dom-adapter.js", "actions/message-action-resolver.js", "content.js"],
       "run_at": "document_end"
     }
   ],

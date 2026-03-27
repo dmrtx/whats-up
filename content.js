@@ -52,6 +52,13 @@
   let gifPickerComposer = null;
   let gifIndicatorComposer = null;
   let gifSendInProgress = false;
+  let gifCleanupTimer = null;
+  let gifCleanupComposer = null;
+  let gifCleanupUntil = 0;
+  let suppressComposerInputHandler = false;
+  let programmaticClearDepth = 0;
+  let domAdapter = null;
+  let messageActionResolver = null;
 
   function clampUiScale(value) {
     const numeric = Number(value);
@@ -199,6 +206,30 @@
     copy: ['copy', 'copiar', 'copier', 'kopieren', 'copia'],
     pin: ['pin', 'fijar', 'épingler', 'anheften', 'fissa']
   };
+
+  function initializeWhatsAppAdapters() {
+    if (!window.WAImproverDomAdapter?.createWhatsAppDomAdapter) {
+      console.warn('WhatsApp Web Improver: DOM adapter module unavailable');
+      return;
+    }
+
+    if (!window.WAImproverMessageActionResolver?.createMessageActionResolver) {
+      console.warn('WhatsApp Web Improver: Action resolver module unavailable');
+      return;
+    }
+
+    domAdapter = window.WAImproverDomAdapter.createWhatsAppDomAdapter({
+      isElementVisible,
+      clickElementReliably
+    });
+
+    messageActionResolver = window.WAImproverMessageActionResolver.createMessageActionResolver({
+      actionKeywords,
+      clickElementReliably,
+      domAdapter,
+      isElementVisible
+    });
+  }
 
   // Load settings from storage
   function loadSettings() {
@@ -706,8 +737,9 @@
       return true;
     }
 
-    setComposerText(composer, '');
-    openNativeGifPanelWithQuery(draft.query);
+    clearAnyVisibleGifCommandComposer(true);
+    clearComposerNowAndStabilize(composer);
+    setTimeout(() => openNativeGifPanelWithQuery(draft.query, composer), 80);
 
     return true;
   }
@@ -732,6 +764,45 @@
     return true;
   }
 
+  function findGifTabButton() {
+    const selectors = [
+      '[role="tab"][aria-label*="gif" i]',
+      '[aria-label*="gif" i]',
+      'button[title*="gif" i]',
+      '[data-testid*="gif"]'
+    ];
+
+    for (const selector of selectors) {
+      const nodes = Array.from(document.querySelectorAll(selector)).filter(isElementVisible);
+      const gifNode = nodes.find((node) => /gif/i.test(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title') || ''));
+      if (gifNode) {
+        return gifNode.closest('[role="button"], button, [role="tab"]') || gifNode;
+      }
+    }
+
+    return null;
+  }
+
+  function waitForGifTabButton(maxAttempts = 12, delayMs = 100) {
+    return new Promise((resolve) => {
+      let attempts = maxAttempts;
+      const tick = () => {
+        const tab = findGifTabButton();
+        if (tab) {
+          resolve(tab);
+          return;
+        }
+        attempts -= 1;
+        if (attempts <= 0) {
+          resolve(null);
+          return;
+        }
+        setTimeout(tick, delayMs);
+      };
+      tick();
+    });
+  }
+
   function openGifPanelByClickFallback() {
     const footer = document.querySelector('footer');
     if (!footer) return false;
@@ -747,23 +818,13 @@
         break;
       }
     }
+    
+    waitForGifTabButton(14, 90).then((tab) => {
+      if (!tab) return;
+      clickVisibleElement(tab);
+    });
 
-    const gifTabSelectors = [
-      '[role="tab"][aria-label*="gif" i]',
-      '[aria-label*="gif" i]',
-      'button[title*="gif" i]',
-      '[data-testid*="gif"]'
-    ];
-
-    for (const selector of gifTabSelectors) {
-      const nodes = Array.from(document.querySelectorAll(selector)).filter(isElementVisible);
-      const gifNode = nodes.find((node) => /gif/i.test(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title') || ''));
-      if (gifNode && clickVisibleElement(gifNode.closest('[role="button"], button, [role="tab"]') || gifNode)) {
-        return true;
-      }
-    }
-
-    return false;
+    return true;
   }
 
   function findNativeGifSearchField() {
@@ -777,11 +838,7 @@
     ];
 
     for (const selector of strictSelectors) {
-      const nodes = Array.from(document.querySelectorAll(selector)).filter((node) => {
-        if (!isElementVisible(node)) return false;
-        if (node.closest('footer')) return false;
-        return true;
-      });
+      const nodes = Array.from(document.querySelectorAll(selector)).filter((node) => isElementVisible(node));
       if (nodes.length > 0) return nodes[0];
     }
 
@@ -861,9 +918,12 @@
     return (field.innerText || field.textContent || '').trim();
   }
 
-  function openNativeGifPanelWithQuery(query) {
+  function openNativeGifPanelWithQuery(query, composer = null) {
     hideGifCommandIndicator();
     closeGifPicker();
+
+    clearAnyVisibleGifCommandComposer();
+    composer?.focus();
     
     // Open GIF panel via UI flow first to avoid focusing global chat search.
     openGifPanelByClickFallback();
@@ -878,15 +938,17 @@
       return field;
     }).then((field) => {
       if (!field) {
-        console.warn('WhatsApp Web Improver: Native GIF search field not found (strict GIPHY selector)');
+        console.info('WhatsApp Web Improver: Native GIF search field not found (strict GIPHY selector)');
         return;
       }
 
       setSearchFieldText(field, query);
+      clearAnyVisibleGifCommandComposer();
       setTimeout(() => {
         if (!getSearchFieldText(field)) {
           setSearchFieldText(field, query);
         }
+        clearAnyVisibleGifCommandComposer();
       }, 180);
     });
   }
@@ -1013,6 +1075,125 @@
     selection.addRange(range);
 
     composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  }
+
+  function getComposerParagraph(composer) {
+    if (!composer) return null;
+    return composer.querySelector('p.copyable-text, p._aupe, p[class*="copyable-text"]') || composer.querySelector('p');
+  }
+
+  function scrubGifCommandFromComposer(composer, force = false) {
+    if (!composer) return;
+    const rawText = (composer.innerText || composer.textContent || '').replace(/\u00A0/g, ' ').trim();
+    if (!force && !rawText.toLowerCase().startsWith('/gif')) return;
+
+    const paragraph = getComposerParagraph(composer);
+    if (paragraph) {
+      paragraph.textContent = '';
+      paragraph.innerHTML = '<br>';
+    }
+
+    if (!paragraph) {
+      composer.textContent = '';
+    }
+  }
+
+  function ensureComposerEmptyStructure(composer) {
+    if (!composer) return;
+    const existingParagraph = getComposerParagraph(composer);
+    if (existingParagraph) {
+      existingParagraph.textContent = '';
+      existingParagraph.innerHTML = '<br>';
+      return;
+    }
+    composer.textContent = '';
+    composer.innerHTML = '<br>';
+  }
+
+  function getGifCommandComposerCandidates() {
+    return Array.from(document.querySelectorAll('[contenteditable="true"]'));
+  }
+
+  function hasGifCommandText(composer) {
+    const text = getComposerText(composer)
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/\u00A0/g, ' ')
+      .toLowerCase()
+      .trim();
+    return /(^|\s)\/gif(\s|$)/i.test(text);
+  }
+
+  function clearAnyVisibleGifCommandComposer(onlyIfGif = true) {
+    const composers = getGifCommandComposerCandidates();
+    for (const candidate of composers) {
+      if (!isElementVisible(candidate)) continue;
+      if (onlyIfGif && !hasGifCommandText(candidate)) continue;
+      clearComposerText(candidate, { emitEvents: true });
+    }
+  }
+
+  function clearComposerText(composer, options = {}) {
+    if (!composer) return;
+    const { emitEvents = true } = options;
+    programmaticClearDepth += 1;
+    try {
+      composer.focus();
+      scrubGifCommandFromComposer(composer, true);
+      ensureComposerEmptyStructure(composer);
+      if (emitEvents) {
+        suppressComposerInputHandler = true;
+        composer.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          inputType: 'deleteContentBackward',
+          data: null
+        }));
+        setTimeout(() => {
+          suppressComposerInputHandler = false;
+        }, 0);
+      }
+    } finally {
+      programmaticClearDepth = Math.max(0, programmaticClearDepth - 1);
+    }
+  }
+
+  function clearComposerNowAndStabilize(composer) {
+    if (!composer) return;
+
+    if (gifCleanupTimer) {
+      clearTimeout(gifCleanupTimer);
+      gifCleanupTimer = null;
+    }
+
+    gifCleanupComposer = composer;
+    gifCleanupUntil = Date.now() + 12000;
+
+    const runClear = () => {
+      scrubGifCommandFromComposer(composer, true);
+      clearComposerText(composer);
+      clearAnyVisibleGifCommandComposer(true);
+      composer.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+
+    // Immediate clear before any GIF UI action.
+    runClear();
+
+    // Keep it clear while WhatsApp may restore draft text asynchronously.
+    const loop = () => {
+      if (!gifCleanupComposer || Date.now() >= gifCleanupUntil) {
+        gifCleanupTimer = null;
+        gifCleanupComposer = null;
+        return;
+      }
+      runClear();
+      gifCleanupTimer = setTimeout(loop, 90);
+    };
+
+    [20, 40, 80, 140, 220, 320, 460, 620].forEach((delay) => {
+      setTimeout(runClear, delay);
+    });
+    gifCleanupTimer = setTimeout(loop, 120);
   }
 
   function clickSendComposerMessage(composer) {
@@ -1366,222 +1547,35 @@
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }
-  
-  function isMenuSizeReasonable(el) {
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return false;
-    
-    const viewportArea = (window.innerWidth || 1) * (window.innerHeight || 1);
-    const area = rect.width * rect.height;
-    
-    // Ignore huge containers (like the full app shell)
-    if (area > viewportArea * 0.35) return false;
-    return true;
-  }
-  
-  function getMenuItemsForNode(node) {
-    return node.querySelectorAll('[role="button"], [role="menuitem"], li[tabindex], div[tabindex], li');
-  }
 
-  function hasMenuContainerRole(node) {
-    if (!node || !node.getAttribute) return false;
-    const role = node.getAttribute('role');
-    return role === 'menu' || role === 'dialog' || role === 'listbox';
-  }
+  initializeWhatsAppAdapters();
 
-  function hasMenuLikeDescendants(node) {
-    if (!node?.querySelector) return false;
-    return Boolean(
-      node.querySelector('[role="menuitem"], [role="menu"], [aria-haspopup="menu"], [data-animate-dropdown]')
-    );
-  }
-  
   function findContextMenu() {
-    const selectors = [
-      '[role="menu"]',
-      'div[role="dialog"] [role="menu"]',
-      'ul[role="menu"]',
-      '[data-animate-dropdown]',
-      'div[role="dialog"] ul'
-    ];
-    
-    for (const selector of selectors) {
-      const candidates = document.querySelectorAll(selector);
-      for (const menu of candidates) {
-        if (!isElementVisible(menu) || !isMenuSizeReasonable(menu)) continue;
-        const items = Array.from(getMenuItemsForNode(menu)).filter(isElementVisible);
-        if (items.length >= 2 && items.length <= 16) {
-          return menu;
-        }
-      }
-    }
-    
-    return null;
+    return domAdapter?.findContextMenu() || null;
   }
-  
+
   function ensureContextMenuOpen() {
-    if (currentContextMenu && isElementVisible(currentContextMenu)) {
-      contextMenuOpen = true;
-      return true;
-    }
-    
-    const menu = findContextMenu();
-    if (menu) {
-      currentContextMenu = menu;
-      contextMenuOpen = true;
-      return true;
-    }
-    
-    contextMenuOpen = false;
-    currentContextMenu = null;
-    return false;
+    const result = domAdapter?.ensureContextMenuOpen(currentContextMenu) || { open: false, menu: null };
+    contextMenuOpen = result.open;
+    currentContextMenu = result.menu;
+    return result.open;
   }
-  
+
   function waitForContextMenu(callback, attempts = 6, delayMs = 100) {
-    const menu = findContextMenu();
-    if (menu) {
-      currentContextMenu = menu;
-      contextMenuOpen = true;
-      callback(menu);
-      return;
-    }
-    
-    if (attempts <= 0) {
+    if (!domAdapter) {
       callback(null);
       return;
     }
-    
-    setTimeout(() => waitForContextMenu(callback, attempts - 1, delayMs), delayMs);
-  }
 
-  function dispatchRightClickSequence(targetElement, x, y) {
-    const base = {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      button: 2,
-      buttons: 2,
-      clientX: x,
-      clientY: y
-    };
-
-    targetElement.dispatchEvent(new PointerEvent('pointerdown', { ...base, pointerType: 'mouse' }));
-    targetElement.dispatchEvent(new MouseEvent('mousedown', base));
-    targetElement.dispatchEvent(new MouseEvent('mouseup', base));
-    targetElement.dispatchEvent(new MouseEvent('contextmenu', base));
-  }
-
-  function resolveMessageActionTarget(messageElement) {
-    if (!messageElement) return null;
-
-    const preferredSelectors = [
-      '[data-pre-plain-text]',
-      '[data-testid="msg-container"]',
-      '[data-testid="selectable-text"]',
-      '[class*="copyable-text"]',
-      'div[class*="message-in"]',
-      'div[class*="message-out"]',
-      'span[dir]'
-    ];
-
-    for (const selector of preferredSelectors) {
-      const found = messageElement.closest(selector) || messageElement.querySelector(selector);
-      if (found && isElementVisible(found)) {
-        return found;
-      }
-    }
-
-    const containers = [
-      messageElement.closest('[data-id]'),
-      messageElement.closest('[data-testid="msg-container"]'),
-      messageElement.closest('div[class*="message-in"], div[class*="message-out"]'),
-      messageElement.closest('[role="row"]'),
-      messageElement
-    ].filter(Boolean);
-
-    const innerSelectors = [
-      '[data-pre-plain-text]',
-      '[data-testid="selectable-text"]',
-      '[class*="copyable-text"]',
-      'span[dir]'
-    ];
-
-    const candidates = [];
-    for (const container of containers) {
-      if (isElementVisible(container)) candidates.push(container);
-      for (const selector of innerSelectors) {
-        const found = container.querySelector(selector);
-        if (found && isElementVisible(found)) candidates.push(found);
-      }
-    }
-
-    if (candidates.length === 0) return messageElement;
-
-    candidates.sort((left, right) => {
-      const l = left.getBoundingClientRect();
-      const r = right.getBoundingClientRect();
-      return (l.width * l.height) - (r.width * r.height);
-    });
-
-    return candidates[0];
+    domAdapter.waitForContextMenu((menu) => {
+      currentContextMenu = menu;
+      contextMenuOpen = Boolean(menu);
+      callback(menu);
+    }, attempts, delayMs);
   }
 
   function openContextMenuForMessageElement(messageElement) {
-    if (!messageElement) return;
-
-    const actionTarget = resolveMessageActionTarget(messageElement) || messageElement;
-
-    const row = actionTarget.closest('[data-id], [role="row"], [data-testid="msg-container"]') || actionTarget;
-    const menuButtonSelectors = [
-      'span[data-icon="down-context"]',
-      'span[data-icon*="down"]',
-      '[data-testid*="down-context"]',
-      '[data-testid*="context"]'
-    ];
-
-    row.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, view: window }));
-    row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }));
-
-    const rowRect = row.getBoundingClientRect();
-    const menuButtonCandidates = [];
-
-    for (const selector of menuButtonSelectors) {
-      const candidate = row.querySelector(selector) || actionTarget.querySelector(selector);
-      if (!candidate) continue;
-
-      const clickable = candidate.closest('[role="button"], button, [tabindex]') || candidate;
-      const rect = clickable.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) continue;
-      const sameVerticalBand = rect.bottom >= rowRect.top - 20 && rect.top <= rowRect.bottom + 20;
-      if (!sameVerticalBand) continue;
-      menuButtonCandidates.push(clickable);
-    }
-
-    for (const clickable of menuButtonCandidates) {
-      try {
-        clickElementReliably(clickable);
-        return;
-      } catch (error) {
-        // Try next candidate
-      }
-    }
-
-    actionTarget.scrollIntoView({ behavior: 'auto', block: 'center' });
-    const rect = actionTarget.getBoundingClientRect();
-
-    if (!rect.width || !rect.height) return;
-
-    const probePoints = [
-      [Math.round(rect.left + rect.width * 0.8), Math.round(rect.top + rect.height * 0.25)],
-      [Math.round(rect.left + rect.width * 0.9), Math.round(rect.top + rect.height * 0.5)],
-      [Math.round(rect.left + rect.width * 0.8), Math.round(rect.top + rect.height * 0.75)],
-      [Math.round(rect.left + rect.width * 0.5), Math.round(rect.top + rect.height * 0.5)]
-    ];
-
-    for (const [x, y] of probePoints) {
-      const topMost = document.elementFromPoint(x, y) || actionTarget;
-      dispatchRightClickSequence(topMost, x, y);
-    }
+    domAdapter?.openContextMenuForMessageElement(messageElement);
   }
               
   // Detect when context menu opens
@@ -1592,17 +1586,17 @@
           // Check if this is a context menu (span with role="application" containing menu items)
           let menu = null;
           
-          if (node.getAttribute && hasMenuContainerRole(node) && isContextMenu(node)) {
+          if (node.getAttribute && domAdapter?.hasMenuContainerRole(node) && domAdapter?.isContextMenu(node)) {
             menu = node;
           } else if (node.querySelector) {
             const candidate = node.querySelector('[role="menu"], [data-animate-dropdown], [role="dialog"] ul');
-            if (candidate && isContextMenu(candidate)) {
+            if (candidate && domAdapter?.isContextMenu(candidate)) {
               menu = candidate;
             }
           }
           
           // Additional check: look for menu structure
-          if (!menu && isContextMenu(node)) {
+          if (!menu && domAdapter?.isContextMenu(node)) {
             menu = node;
           }
           
@@ -1629,46 +1623,6 @@
     });
   });
 
-  // Helper function to check if node is a context menu
-  function isContextMenu(node) {
-    if (!node || !node.querySelector) return false;
-
-    if (node.id === 'main') return false;
-    if (node.getAttribute && node.getAttribute('role') === 'row') return false;
-    if (!hasMenuContainerRole(node) && !hasMenuLikeDescendants(node)) return false;
-    
-    // Optimization: Check for menu items first (cheap DOM traversal)
-    // before checking visibility/size (expensive layout thrashing)
-    // Most added nodes (like messages) have < 2 items and fail here fast.
-    const items = Array.from(getMenuItemsForNode(node)).filter(isElementVisible);
-    if (items.length < 2 || items.length > 16) return false;
-
-    // Only do expensive layout checks if it looks like a menu structure
-    if (!isElementVisible(node) || !isMenuSizeReasonable(node)) return false;
-
-    return true;
-  }
-
-  function normalizeText(value) {
-    return (value || '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .trim();
-  }
-
-  function getActiveContextMenu(menuOverride = null) {
-    if (menuOverride && menuOverride.isConnected && isElementVisible(menuOverride) && isContextMenu(menuOverride)) {
-      return menuOverride;
-    }
-
-    if (currentContextMenu && currentContextMenu.isConnected && isElementVisible(currentContextMenu) && isContextMenu(currentContextMenu)) {
-      return currentContextMenu;
-    }
-
-    return findContextMenu();
-  }
-
   function clickElementReliably(element) {
     if (!element) return false;
 
@@ -1693,167 +1647,22 @@
     return true;
   }
 
-  function findVisibleActionCandidate(action) {
-    const keywords = (actionKeywords[action] || []).map(normalizeText);
-    if (keywords.length === 0) return null;
-
-    const selectors = [
-      '[role="menuitem"]',
-      '[role="button"]',
-      'li[tabindex]',
-      'div[tabindex]'
-    ];
-
-    const nodes = Array.from(document.querySelectorAll(selectors.join(','))).filter(isElementVisible);
-    const candidates = nodes.filter((node) => {
-      const text = normalizeText(node.textContent);
-      const ariaLabel = normalizeText(node.getAttribute('aria-label'));
-      const title = normalizeText(node.getAttribute('title'));
-      if (!text && !ariaLabel && !title) return false;
-
-      return keywords.some((keyword) => text.includes(keyword) || ariaLabel.includes(keyword) || title.includes(keyword));
-    });
-
-    if (candidates.length === 0) return null;
-
-    candidates.sort((left, right) => {
-      const leftRect = left.getBoundingClientRect();
-      const rightRect = right.getBoundingClientRect();
-      const leftArea = leftRect.width * leftRect.height;
-      const rightArea = rightRect.width * rightRect.height;
-      return leftArea - rightArea;
-    });
-
-    return candidates[0];
-  }
-
-  function getMenuContainerForItem(item) {
-    if (!item) return null;
-
-    let current = item;
-    let depth = 0;
-    while (current && depth < 8) {
-      if (isElementVisible(current) && isMenuSizeReasonable(current)) {
-        const visibleItems = Array.from(getMenuItemsForNode(current)).filter(isElementVisible);
-        if (visibleItems.length >= 2 && visibleItems.length <= 20) {
-          return current;
-        }
-      }
-
-      current = current.parentElement;
-      depth += 1;
-    }
-
-    return null;
-  }
-
-  function findMenuScopedActionCandidate(action) {
-    const keywords = (actionKeywords[action] || []).map(normalizeText);
-    if (keywords.length === 0) return null;
-
-    const selectors = [
-      '[role="menuitem"]',
-      '[role="button"]',
-      'li[tabindex]',
-      'div[tabindex]',
-      'li',
-      'button'
-    ];
-
-    const nodes = Array.from(document.querySelectorAll(selectors.join(','))).filter(isElementVisible);
-    const candidates = nodes.filter((node) => {
-      const container = getMenuContainerForItem(node);
-      if (!container) return false;
-
-      const text = normalizeText(node.textContent);
-      const ariaLabel = normalizeText(node.getAttribute('aria-label'));
-      const title = normalizeText(node.getAttribute('title'));
-      if (!text && !ariaLabel && !title) return false;
-
-      return keywords.some((keyword) => text.includes(keyword) || ariaLabel.includes(keyword) || title.includes(keyword));
-    });
-
-    if (candidates.length === 0) return null;
-
-    candidates.sort((left, right) => {
-      const leftContainer = getMenuContainerForItem(left);
-      const rightContainer = getMenuContainerForItem(right);
-
-      if (leftContainer && rightContainer && leftContainer !== rightContainer) {
-        const leftArea = leftContainer.getBoundingClientRect().width * leftContainer.getBoundingClientRect().height;
-        const rightArea = rightContainer.getBoundingClientRect().width * rightContainer.getBoundingClientRect().height;
-        return leftArea - rightArea;
-      }
-
-      const leftRect = left.getBoundingClientRect();
-      const rightRect = right.getBoundingClientRect();
-      return (leftRect.width * leftRect.height) - (rightRect.width * rightRect.height);
-    });
-
-    return candidates[0];
-  }
-
   // Find and click a menu item by action
   function clickMenuItemByAction(action, menuOverride = null, allowGlobalFallback = true) {
-    const menu = getActiveContextMenu(menuOverride);
-    
-    if (menu) {
-      currentContextMenu = menu;
+    if (!messageActionResolver) return false;
+
+    const result = messageActionResolver.clickMenuItemByAction(action, {
+      allowGlobalFallback,
+      currentContextMenu,
+      menuOverride
+    });
+
+    if (result.menu) {
+      currentContextMenu = result.menu;
       contextMenuOpen = true;
-
-      // Find all possible menu items
-      const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"], [role="button"], li[tabindex], div[tabindex], li, button'))
-        .filter(isElementVisible);
-      
-      console.log(`🔍 WhatsApp Web Improver: Looking for "${action}" action among ${menuItems.length} menu items`);
-
-      const keywords = (actionKeywords[action] || []).map(normalizeText);
-
-      for (const item of menuItems) {
-        const text = normalizeText(item.textContent);
-        const ariaLabel = normalizeText(item.getAttribute('aria-label'));
-        const title = normalizeText(item.getAttribute('title'));
-        
-        for (const keyword of keywords) {
-          if (text.includes(keyword) || ariaLabel.includes(keyword) || title.includes(keyword)) {
-            console.log(`✓ WhatsApp Web Improver: "${action}" button found! Clicking...`);
-            return clickElementReliably(item);
-          }
-        }
-      }
-
-      console.log(`❌ WhatsApp Web Improver: "${action}" button not found inside active menu`);
-    } else {
-      const scopedCandidate = findMenuScopedActionCandidate(action);
-      if (scopedCandidate) {
-        console.log(`✓ WhatsApp Web Improver: Menu-scoped fallback found "${action}" item. Clicking...`);
-        return clickElementReliably(scopedCandidate);
-      }
-
-      if (!allowGlobalFallback) {
-        console.log('❌ WhatsApp Web Improver: Active menu not detected for selected-message action');
-        return false;
-      }
-      console.log('⚠️ WhatsApp Web Improver: Active menu not detected, trying global action fallback');
     }
 
-    if (!allowGlobalFallback) {
-      const scopedCandidate = findMenuScopedActionCandidate(action);
-      if (scopedCandidate) {
-        console.log(`✓ WhatsApp Web Improver: Menu-scoped fallback found "${action}" item. Clicking...`);
-        return clickElementReliably(scopedCandidate);
-      }
-      return false;
-    }
-
-    const fallbackItem = findVisibleActionCandidate(action);
-    if (fallbackItem) {
-      console.log(`✓ WhatsApp Web Improver: Fallback found "${action}" item. Clicking...`);
-      return clickElementReliably(fallbackItem);
-    }
-
-    console.log(`❌ WhatsApp Web Improver: "${action}" action not found in visible UI`);
-    return false;
+    return result.clicked;
   }
   
   function getActionForKey(key) {
@@ -2063,6 +1872,15 @@
     e.stopImmediatePropagation();
   }, true);
 
+  document.addEventListener('keyup', (e) => {
+    if (e.key !== 'Enter') return;
+    const composerTarget = getComposerFromTarget(e.target) || getComposerFromTarget(document.activeElement);
+    if (!composerTarget) return;
+    if (composerTarget !== gifCleanupComposer) return;
+    if (Date.now() > gifCleanupUntil + 1200) return;
+    clearComposerText(composerTarget);
+  }, true);
+
   document.addEventListener('mousedown', (e) => {
     if (!isSendButtonTarget(e.target)) return;
     const composer = getActiveComposer();
@@ -2104,6 +1922,8 @@
   });
 
   document.addEventListener('input', (event) => {
+    if (suppressComposerInputHandler || programmaticClearDepth > 0) return;
+
     const composer = getComposerFromTarget(event.target);
     if (!composer) {
       hideGifCommandIndicator();
