@@ -51,19 +51,51 @@
       const selection = window.getSelection();
       if (!selection) return;
 
+      composer.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        inputType: 'insertText',
+        data: text
+      }));
+
       const range = document.createRange();
       range.selectNodeContents(composer);
-      range.deleteContents();
-
-      const textNode = document.createTextNode(text);
-      range.insertNode(textNode);
-      range.setStartAfter(textNode);
-      range.collapse(true);
-
       selection.removeAllRanges();
       selection.addRange(range);
 
+      let insertedWithExecCommand = false;
+      try {
+        insertedWithExecCommand = document.execCommand('insertText', false, text);
+      } catch (error) {
+        insertedWithExecCommand = false;
+      }
+
+      if (!insertedWithExecCommand || getComposerText(composer) !== text) {
+        range.deleteContents();
+
+        const paragraph = getComposerParagraph(composer);
+        if (paragraph) {
+          paragraph.textContent = text;
+          const textNode = paragraph.firstChild || document.createTextNode(text);
+          if (!paragraph.firstChild) {
+            paragraph.appendChild(textNode);
+          }
+          range.selectNodeContents(paragraph);
+          range.collapse(false);
+        } else {
+          const textNode = document.createTextNode(text);
+          range.insertNode(textNode);
+          range.setStartAfter(textNode);
+          range.collapse(true);
+        }
+
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+
       composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      composer.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
     }
 
     function getComposerParagraph(composer) {
