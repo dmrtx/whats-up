@@ -27,8 +27,26 @@
       </div>
 
       <div class="info-box">
-        <p><strong>Quick use:</strong> Right-click a message → press your shortcut.</p>
+        <p><strong>Quick use:</strong> press <kbd>↑</kbd> (or <kbd>Alt</kbd>+<kbd>↑</kbd>) to pick a message, then your shortcut key. Right-clicking a message still works too.</p>
       </div>
+
+      <details class="panel" open>
+        <summary>Message Navigation</summary>
+        <div class="shortcuts-section">
+        <div class="shortcut-item">
+          <div class="shortcut-info">
+            <label for="navigation-enabled">Navigate With Arrows</label>
+            <span class="description"><kbd>↑</kbd> from an empty composer, or <kbd>Alt</kbd>+<kbd>↑</kbd> anywhere. Then <kbd>↑</kbd>/<kbd>↓</kbd> to move and <kbd>Esc</kbd> to exit.</span>
+          </div>
+          <div class="shortcut-input">
+            <label class="toggle">
+              <input type="checkbox" id="navigation-enabled" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        </div>
+      </details>
 
       <details class="panel" open>
         <summary>Keyboard Shortcuts</summary>
@@ -168,19 +186,52 @@
 
         <div class="shortcut-item">
           <div class="shortcut-info">
+            <label for="uptime-reload-enabled">Reload After Long Uptime</label>
+            <span class="description">More reliable than the memory reading below, which cannot see DOM and media growth</span>
+          </div>
+          <div class="shortcut-input">
+            <select id="uptime-reload-hours">
+              <option value="6">6 h</option>
+              <option value="12" selected>12 h</option>
+              <option value="24">24 h</option>
+              <option value="48">48 h</option>
+            </select>
+            <label class="toggle">
+              <input type="checkbox" id="uptime-reload-enabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="shortcut-item">
+          <div class="shortcut-info">
             <label for="memory-monitor-enabled">Memory Monitor</label>
-            <span class="description">Auto-reload when memory usage exceeds threshold</span>
+            <span class="description">Trips at this JS-heap size. Only measures JavaScript memory, so it under-reports the real usage.</span>
           </div>
           <div class="shortcut-input">
             <select id="memory-threshold">
               <option value="500">500 MB</option>
               <option value="750">750 MB</option>
-              <option value="1000" selected>1 GB</option>
-              <option value="1500">1.5 GB</option>
+              <option value="1000">1 GB</option>
+              <option value="1500" selected>1.5 GB</option>
               <option value="2000">2 GB</option>
+              <option value="3000">3 GB</option>
             </select>
             <label class="toggle">
-              <input type="checkbox" id="memory-monitor-enabled">
+              <input type="checkbox" id="memory-monitor-enabled" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="shortcut-item">
+          <div class="shortcut-info">
+            <label for="memory-auto-reload">Reload Automatically</label>
+            <span class="description">Reload on its own when memory is high, instead of only warning. Never while you have a draft or a call.</span>
+          </div>
+          <div class="shortcut-input">
+            <label class="toggle">
+              <input type="checkbox" id="memory-auto-reload" checked>
               <span class="slider"></span>
             </label>
           </div>
@@ -201,7 +252,7 @@
         <div class="shortcut-item">
           <div class="shortcut-info">
             <label for="show-reload-notification">Show Notification Before Reload</label>
-            <span class="description">Ask for confirmation before auto-reloading</span>
+            <span class="description">Show a 15s cancellable banner first. Off means it reloads with no warning.</span>
           </div>
           <div class="shortcut-input">
             <label class="toggle">
@@ -221,6 +272,7 @@
     </main>
   </div>
 
+  <script src="shared/default-settings.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WhatsApp Web Improver",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Add keyboard shortcuts to WhatsApp Web - Configurable shortcuts for edit, delete, reply, and more",
   "icons": {
     "16": "icon16.png",
@@ -10,7 +10,6 @@
     "128": "icon128.png"
   },
   "permissions": ["storage"],
-  "host_permissions": ["https://g.tenor.com/*"],
   "action": {
     "default_title": "WhatsApp Web Improver",
     "default_icon": {
@@ -25,13 +24,28 @@
   "content_scripts": [
     {
       "matches": ["https://web.whatsapp.com/*"],
-      "js": ["compat/whatsapp-dom-adapter.js", "compat/whatsapp-composer-controller.js", "actions/message-action-resolver.js", "content.js"],
+      "js": [
+        "shared/default-settings.js",
+        "compat/whatsapp-dom-adapter.js",
+        "compat/whatsapp-composer-controller.js",
+        "actions/message-action-resolver.js",
+        "content.js"
+      ],
       "run_at": "document_end"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["popup.html", "popup.css", "options.js", "icon16.png", "icon32.png", "icon48.png", "icon128.png"],
+      "resources": [
+        "popup.html",
+        "popup.css",
+        "options.js",
+        "shared/default-settings.js",
+        "icon16.png",
+        "icon32.png",
+        "icon48.png",
+        "icon128.png"
+      ],
       "matches": ["https://web.whatsapp.com/*"]
     }
   ]

@@ -1,27 +1,11 @@
 // WhatsApp Web Improver - Options Page Script
 
-const defaultSettings = {
-  edit: { key: 'e', enabled: true },
-  delete: { key: 'd', enabled: true },
-  reply: { key: 'r', enabled: true },
-  forward: { key: 'f', enabled: true },
-  star: { key: 's', enabled: true },
-  info: { key: 'i', enabled: true },
-  copy: { key: 'c', enabled: true },
-  pin: { key: 'p', enabled: true }
-};
-
-const defaultPerformanceSettings = {
-  autoReload: {
-    enabled: false,
-    time: '04:00'
-  },
-  memoryMonitor: {
-    enabled: false,
-    threshold: 1000  // MB
-  },
-  showReloadNotification: true
-};
+const {
+  DEFAULT_SHORTCUTS: defaultSettings,
+  DEFAULT_PERFORMANCE_SETTINGS: defaultPerformanceSettings,
+  DEFAULT_NAVIGATION_SETTINGS: defaultNavigationSettings,
+  withDefaults
+} = window.WAImproverDefaults;
 
 const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
 const LAST_ACTIVE_KEY = 'waImproverLastSeen';
@@ -37,10 +21,11 @@ const AUTO_SAVE_DEBOUNCE_MS = 400;
 // Load saved settings
 function loadSettings() {
   isLoading = true;
-  chrome.storage.sync.get(['shortcuts', 'performance'], (data) => {
-    const settings = data.shortcuts || defaultSettings;
-    const perfSettings = data.performance || defaultPerformanceSettings;
-    
+  chrome.storage.sync.get(['shortcuts', 'performance', 'navigation'], (data) => {
+    const settings = withDefaults(data.shortcuts, defaultSettings);
+    const perfSettings = withDefaults(data.performance, defaultPerformanceSettings);
+    const navSettings = withDefaults(data.navigation, defaultNavigationSettings);
+
     // Load shortcuts
     Object.keys(settings).forEach(action => {
       const keyInput = document.getElementById(`${action}-key`);
@@ -67,11 +52,30 @@ function loadSettings() {
     }
     
     if (memoryMonitorEnabled) {
-      memoryMonitorEnabled.checked = perfSettings.memoryMonitor?.enabled || false;
-      memoryThreshold.value = perfSettings.memoryMonitor?.threshold || 1000;
+      memoryMonitorEnabled.checked = perfSettings.memoryMonitor?.enabled !== false;
+      memoryThreshold.value = perfSettings.memoryMonitor?.threshold || defaultPerformanceSettings.memoryMonitor.threshold;
       memoryThreshold.disabled = !memoryMonitorEnabled.checked;
     }
-    
+
+    const uptimeReloadEnabled = document.getElementById('uptime-reload-enabled');
+    const uptimeReloadHours = document.getElementById('uptime-reload-hours');
+    if (uptimeReloadEnabled && uptimeReloadHours) {
+      uptimeReloadEnabled.checked = perfSettings.uptimeReload?.enabled === true;
+      uptimeReloadHours.value = String(perfSettings.uptimeReload?.hours || defaultPerformanceSettings.uptimeReload.hours);
+      uptimeReloadHours.disabled = !uptimeReloadEnabled.checked;
+    }
+
+    const memoryAutoReload = document.getElementById('memory-auto-reload');
+    if (memoryAutoReload) {
+      memoryAutoReload.checked = perfSettings.memoryMonitor?.autoReload !== false;
+      memoryAutoReload.disabled = !memoryMonitorEnabled?.checked;
+    }
+
+    const navigationEnabled = document.getElementById('navigation-enabled');
+    if (navigationEnabled) {
+      navigationEnabled.checked = navSettings.enabled !== false;
+    }
+
     const memoryStatus = document.getElementById('memory-status');
     if (memoryStatus) {
       const shouldShowMemory = isPopupView || (memoryMonitorEnabled && memoryMonitorEnabled.checked);
@@ -115,6 +119,8 @@ function saveSettings(options = {}) {
     return;
   }
 
+  const parsedThreshold = parseInt(document.getElementById('memory-threshold').value, 10);
+
   // Performance settings
   const performanceSettings = {
     autoReload: {
@@ -123,14 +129,28 @@ function saveSettings(options = {}) {
     },
     memoryMonitor: {
       enabled: document.getElementById('memory-monitor-enabled').checked,
-      threshold: parseInt(document.getElementById('memory-threshold').value)
+      threshold: Number.isFinite(parsedThreshold) && parsedThreshold > 0
+        ? parsedThreshold
+        : defaultPerformanceSettings.memoryMonitor.threshold,
+      percentThreshold: defaultPerformanceSettings.memoryMonitor.percentThreshold,
+      autoReload: document.getElementById('memory-auto-reload')?.checked !== false
+    },
+    uptimeReload: {
+      enabled: document.getElementById('uptime-reload-enabled')?.checked === true,
+      hours: parseInt(document.getElementById('uptime-reload-hours')?.value, 10)
+        || defaultPerformanceSettings.uptimeReload.hours
     },
     showReloadNotification: document.getElementById('show-reload-notification').checked
   };
 
-  chrome.storage.sync.set({ 
+  const navigationSettings = {
+    enabled: document.getElementById('navigation-enabled')?.checked !== false
+  };
+
+  chrome.storage.sync.set({
     shortcuts: settings,
-    performance: performanceSettings
+    performance: performanceSettings,
+    navigation: navigationSettings
   }, () => {
     if (!silent) {
       showStatus('success', 'Settings saved successfully! ✓');
@@ -140,9 +160,10 @@ function saveSettings(options = {}) {
 
 // Reset to defaults
 function resetSettings() {
-  chrome.storage.sync.set({ 
+  chrome.storage.sync.set({
     shortcuts: defaultSettings,
-    performance: defaultPerformanceSettings
+    performance: defaultPerformanceSettings,
+    navigation: defaultNavigationSettings
   }, () => {
     loadSettings();
     showStatus('success', 'Settings reset to defaults! ✓');
@@ -212,10 +233,22 @@ function setupPerformanceListeners() {
       reloadTime.disabled = !autoReloadEnabled.checked;
     });
   }
+
+  const uptimeReloadEnabled = document.getElementById('uptime-reload-enabled');
+  const uptimeReloadHours = document.getElementById('uptime-reload-hours');
+  if (uptimeReloadEnabled && uptimeReloadHours) {
+    uptimeReloadEnabled.addEventListener('change', () => {
+      uptimeReloadHours.disabled = !uptimeReloadEnabled.checked;
+    });
+  }
   
   if (memoryMonitorEnabled && memoryThreshold) {
     memoryMonitorEnabled.addEventListener('change', () => {
       memoryThreshold.disabled = !memoryMonitorEnabled.checked;
+      const memoryAutoReload = document.getElementById('memory-auto-reload');
+      if (memoryAutoReload) {
+        memoryAutoReload.disabled = !memoryMonitorEnabled.checked;
+      }
       if (memoryStatus) {
         const shouldShowMemory = isPopupView || memoryMonitorEnabled.checked;
         memoryStatus.style.display = shouldShowMemory ? 'flex' : 'none';
@@ -384,8 +417,7 @@ document.addEventListener('DOMContentLoaded', () => {
   
   const saveBtn = document.getElementById('save-btn');
   const resetBtn = document.getElementById('reset-btn');
-  const openOptionsBtn = document.getElementById('open-options-btn');
-  
+
   if (saveBtn) {
     if (isPopupView) {
       saveBtn.style.display = 'none';
@@ -394,7 +426,4 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   if (resetBtn) resetBtn.addEventListener('click', resetSettings);
-  if (openOptionsBtn) {
-    openOptionsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
-  }
 });

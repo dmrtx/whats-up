@@ -7,7 +7,12 @@
   if (window.__WA_IMPROVER_LOADED) return;
   window.__WA_IMPROVER_LOADED = true;
 
-  console.log('WhatsApp Web Improver: Extension loaded');
+  // Set window.__WA_IMPROVER_DEBUG = true in the console to get verbose logs.
+  const debugLog = (...args) => {
+    if (window.__WA_IMPROVER_DEBUG) console.log(...args);
+  };
+
+  debugLog('WhatsApp Web Improver: Extension loaded');
 
   let contextMenuOpen = false;
   let currentContextMenu = null;
@@ -16,34 +21,31 @@
   let lastReloadCheck = null;
   let reloadNotificationShown = false;
   let reloadNotificationCooldownUntil = 0;
-  
+
   // Message navigation state
-  let messageNavigationEnabled = false;
+  let messageNavigationEnabled = true;
   let messageNavigationMode = false;
   let selectedMessageIndex = -1;
+  let selectedMessageElement = null;
   let messageElements = [];
   let navigationModeEnteredAt = 0; // Timestamp to prevent immediate actions
   let navigationActionInProgress = false;
   let optionsButtonObserver = null;
   let optionsButtonDebounceTimer = null;
+  let memoryWidgetDebounceTimer = null;
   const PANEL_MIN_WIDTH = 360;
   const PANEL_MAX_WIDTH = 520;
   const UI_SCALE_STORAGE_KEY = 'waImproverUiScale';
   const UI_SCALE_MIN = 85;
   const UI_SCALE_MAX = 130;
   const UI_SCALE_STEP = 5;
-  const GIF_COMMAND_PREFIX = '/gif ';
   const STICKER_COMMAND_PREFIX = '/sticker';
   const SLASH_COMMAND_DEFINITIONS = [
-    { command: 'gif', slash: '/gif', description: 'Buscar GIFs' },
-    { command: 'sticker', slash: '/sticker', description: 'Abrir stickers' }
+    { command: 'gif', slash: '/gif', description: 'Search GIFs' },
+    { command: 'sticker', slash: '/sticker', description: 'Open stickers' }
   ];
-  const GIF_PICKER_ID = 'wa-improver-gif-picker';
   const GIF_INDICATOR_ID = 'wa-improver-gif-indicator';
-  const GIF_LIMIT = 8;
-  const TENOR_PUBLIC_KEY = 'LIVDSRZULELA';
-  const TENOR_SEARCH_URL = 'https://g.tenor.com/v1/search';
-  
+
   // Status + memory reporting (shared with popup/options)
   const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
   const LAST_ACTIVE_KEY = 'waImproverLastSeen';
@@ -51,12 +53,7 @@
   let lastMemoryReportAt = 0;
   let currentUiScale = 100;
   let extensionContextInvalid = false;
-  let gifPickerVisible = false;
-  let gifPickerResults = [];
-  let gifPickerSelectedIndex = 0;
-  let gifPickerComposer = null;
   let gifIndicatorComposer = null;
-  let gifSendInProgress = false;
   let gifCleanupTimer = null;
   let gifCleanupComposer = null;
   let gifCleanupUntil = 0;
@@ -183,23 +180,12 @@
   }
 
   // Default shortcuts
-  const defaultShortcuts = {
-    edit: { key: 'e', enabled: true },
-    delete: { key: 'd', enabled: true },
-    reply: { key: 'r', enabled: true },
-    forward: { key: 'f', enabled: true },
-    star: { key: 's', enabled: true },
-    info: { key: 'i', enabled: true },
-    copy: { key: 'c', enabled: true },
-    pin: { key: 'p', enabled: true }
-  };
-
-  // Default performance settings
-  const defaultPerformanceSettings = {
-    autoReload: { enabled: false, time: '04:00' },
-    memoryMonitor: { enabled: false, threshold: 1000 },
-    showReloadNotification: true
-  };
+  const {
+    DEFAULT_SHORTCUTS: defaultShortcuts,
+    DEFAULT_PERFORMANCE_SETTINGS: defaultPerformanceSettings,
+    DEFAULT_NAVIGATION_SETTINGS: defaultNavigationSettings,
+    withDefaults
+  } = window.WAImproverDefaults;
 
   // Action keywords in different languages
   const actionKeywords = {
@@ -257,12 +243,13 @@
 
   // Load settings from storage
   function loadSettings() {
-    safeStorageSyncGet(['shortcuts', 'performance'], (data) => {
-      shortcuts = data.shortcuts || defaultShortcuts;
-      performanceSettings = data.performance || defaultPerformanceSettings;
+    safeStorageSyncGet(['shortcuts', 'performance', 'navigation'], (data) => {
+      shortcuts = withDefaults(data.shortcuts, defaultShortcuts);
+      performanceSettings = withDefaults(data.performance, defaultPerformanceSettings);
+      messageNavigationEnabled = withDefaults(data.navigation, defaultNavigationSettings).enabled !== false;
       applyWhatsAppScale(loadStoredUiScale(), false);
-      console.log('WhatsApp Web Improver: Settings loaded', { shortcuts, performanceSettings });
-      
+      debugLog('WhatsApp Web Improver: Settings loaded', { shortcuts, performanceSettings });
+
       // Start performance monitoring
       startPerformanceMonitoring();
     });
@@ -278,12 +265,19 @@
 
         if (namespace === 'sync') {
           if (changes.shortcuts) {
-            shortcuts = changes.shortcuts.newValue;
-            console.log('WhatsApp Web Improver: Shortcuts updated', shortcuts);
+            shortcuts = withDefaults(changes.shortcuts.newValue, defaultShortcuts);
+            debugLog('WhatsApp Web Improver: Shortcuts updated', shortcuts);
           }
           if (changes.performance) {
-            performanceSettings = changes.performance.newValue;
-            console.log('WhatsApp Web Improver: Performance settings updated', performanceSettings);
+            performanceSettings = withDefaults(changes.performance.newValue, defaultPerformanceSettings);
+            debugLog('WhatsApp Web Improver: Performance settings updated', performanceSettings);
+          }
+          if (changes.navigation) {
+            messageNavigationEnabled = withDefaults(changes.navigation.newValue, defaultNavigationSettings).enabled !== false;
+            if (!messageNavigationEnabled && messageNavigationMode) {
+              exitNavigationMode();
+            }
+            debugLog('WhatsApp Web Improver: Navigation setting updated', messageNavigationEnabled);
           }
         }
       });
@@ -359,10 +353,97 @@
     }, MEMORY_REPORT_INTERVAL_MS);
   }
 
+  // ===== RELOAD =====
+
+  // A reload right after load would loop forever if WhatsApp is heavy on its
+  // own, so an automatic reload needs both a minimum uptime and a gap since the
+  // previous one. sessionStorage survives the reload within the same tab.
+  const AUTO_RELOAD_MIN_UPTIME_MS = 5 * 60 * 1000;
+  const AUTO_RELOAD_MIN_GAP_MS = 15 * 60 * 1000;
+  const AUTO_RELOAD_COUNTDOWN_SECONDS = 15;
+  const AUTO_RELOAD_STAMP_KEY = 'waImproverLastAutoReload';
+  const pageLoadedAt = Date.now();
+  let reloadPending = false;
+
+  function getLastAutoReloadAt() {
+    try {
+      return Number(sessionStorage.getItem(AUTO_RELOAD_STAMP_KEY)) || 0;
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  function stampAutoReload() {
+    try {
+      sessionStorage.setItem(AUTO_RELOAD_STAMP_KEY, String(Date.now()));
+    } catch (error) {
+      // Private mode / storage disabled: the uptime guard still applies.
+    }
+  }
+
+  // Reloading would throw away anything the user has not sent yet.
+  function hasUnsentDraft() {
+    const composer = getActiveComposer();
+    return Boolean(composer && getComposerText(composer));
+  }
+
+  function isCallActive() {
+    return Boolean(
+      document.querySelector('[data-testid="call-header"], [aria-label*="call" i][role="dialog"], #call-screen')
+    );
+  }
+
+  // Returns null when it is safe to auto-reload, otherwise why it is not.
+  function getAutoReloadBlocker() {
+    if (Date.now() - pageLoadedAt < AUTO_RELOAD_MIN_UPTIME_MS) return 'page loaded too recently';
+    if (Date.now() - getLastAutoReloadAt() < AUTO_RELOAD_MIN_GAP_MS) return 'auto-reloaded recently';
+    if (isCallActive()) return 'a call is active';
+    if (hasUnsentDraft()) return 'there is an unsent draft';
+    return null;
+  }
+
+  function performReload(auto) {
+    if (auto) stampAutoReload();
+    location.reload();
+  }
+
+  // Single entry point for every reload trigger. `auto` reloads on its own
+  // after a cancellable countdown; otherwise the banner just waits for a click.
+  function requestReload(reason, options = {}) {
+    const { auto = false } = options;
+
+    if (reloadPending) return;
+
+    if (!auto) {
+      showReloadNotification(reason);
+      return;
+    }
+
+    const blocker = getAutoReloadBlocker();
+    if (blocker) {
+      debugLog(`WhatsApp Web Improver: auto-reload skipped (${blocker})`);
+      // Still let the user know, so a blocked auto-reload is not silent.
+      if (performanceSettings.showReloadNotification !== false) {
+        showReloadNotification(reason);
+      }
+      return;
+    }
+
+    if (performanceSettings.showReloadNotification === false) {
+      performReload(true);
+      return;
+    }
+
+    reloadPending = true;
+    showReloadNotification(reason, { countdownSeconds: AUTO_RELOAD_COUNTDOWN_SECONDS });
+  }
+
   // Show reload notification banner
-  function showReloadNotification(reason) {
+  function showReloadNotification(reason, options = {}) {
+    const { countdownSeconds = 0 } = options;
+
     if (reloadNotificationShown) return;
-    if (Date.now() < reloadNotificationCooldownUntil) return;
+    if (!countdownSeconds && Date.now() < reloadNotificationCooldownUntil) return;
     reloadNotificationShown = true;
 
     const banner = document.createElement('div');
@@ -417,47 +498,88 @@
       </style>
       <div class="message">
         <strong>⚡ WhatsApp Web Improver</strong>
-        <span>${reason}</span>
+        <span id="wa-reload-reason"></span>
       </div>
       <div class="buttons">
-        <button class="reload-btn" id="wa-reload-now">Reload Now</button>
-        <button class="dismiss-btn" id="wa-reload-later">Later</button>
+        <button class="reload-btn" id="wa-reload-now">Reload now</button>
+        <button class="dismiss-btn" id="wa-reload-later">Not now</button>
       </div>
     `;
 
+    // reason is built from settings/measurements, but keep it out of innerHTML.
+    banner.querySelector('#wa-reload-reason').textContent = reason;
+
     document.body.appendChild(banner);
 
-    document.getElementById('wa-reload-now').addEventListener('click', () => {
-      location.reload();
-    });
+    let countdownTimer = null;
 
-    document.getElementById('wa-reload-later').addEventListener('click', () => {
+    const dismiss = () => {
+      if (countdownTimer) clearInterval(countdownTimer);
       banner.remove();
+      reloadPending = false;
       reloadNotificationCooldownUntil = Date.now() + (60 * 60 * 1000);
       reloadNotificationShown = false;
+    };
+
+    banner.querySelector('#wa-reload-now').addEventListener('click', () => {
+      if (countdownTimer) clearInterval(countdownTimer);
+      performReload(countdownSeconds > 0);
     });
+
+    banner.querySelector('#wa-reload-later').addEventListener('click', dismiss);
+
+    if (countdownSeconds > 0) {
+      const laterBtn = banner.querySelector('#wa-reload-later');
+      let remaining = countdownSeconds;
+
+      const tick = () => {
+        laterBtn.textContent = `Cancel (${remaining}s)`;
+        if (remaining <= 0) {
+          clearInterval(countdownTimer);
+          // Re-check: the user may have started typing during the countdown.
+          if (hasUnsentDraft() || isCallActive()) {
+            dismiss();
+            return;
+          }
+          performReload(true);
+          return;
+        }
+        remaining -= 1;
+      };
+
+      tick();
+      countdownTimer = setInterval(tick, 1000);
+    }
   }
 
   // Check memory usage
   function checkMemoryUsage() {
-    if (!performanceSettings.memoryMonitor?.enabled) return;
-    
-    if (performance && performance.memory) {
-      const usedMB = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
-      const threshold = performanceSettings.memoryMonitor.threshold || 1000;
-      
-      console.log(`📊 WhatsApp Web Improver: Memory usage: ${usedMB} MB (threshold: ${threshold} MB)`);
-      
-      if (usedMB > threshold) {
-        console.log('⚠️ WhatsApp Web Improver: Memory threshold exceeded!');
-        
-        if (performanceSettings.showReloadNotification) {
-          showReloadNotification(`High memory usage detected (${usedMB} MB). Reload recommended for better performance.`);
-        } else {
-          location.reload();
-        }
-      }
-    }
+    const monitor = performanceSettings.memoryMonitor;
+    if (!monitor?.enabled) return;
+
+    const snapshot = getMemorySnapshot();
+    if (!snapshot.available) return;
+
+    const { usedMB, percentage } = snapshot;
+    const mbThreshold = monitor.threshold || defaultPerformanceSettings.memoryMonitor.threshold;
+    const percentThreshold = monitor.percentThreshold || defaultPerformanceSettings.memoryMonitor.percentThreshold;
+
+    debugLog(`📊 WhatsApp Web Improver: memory ${usedMB} MB (${percentage}% of limit) — thresholds ${mbThreshold} MB / ${percentThreshold}%`);
+
+    // usedMB is the everyday trigger. The percentage is measured against a
+    // fixed heap ceiling (~3.5 GB), so it only fires when the tab is genuinely
+    // close to running out of heap.
+    const overMb = usedMB > mbThreshold;
+    const overPercent = percentage > percentThreshold;
+    if (!overMb && !overPercent) return;
+
+    const reason = overPercent
+      ? `WhatsApp Web is using ${usedMB} MB (${percentage}% of the browser heap limit).`
+      : `WhatsApp Web is using ${usedMB} MB, over your ${mbThreshold} MB limit.`;
+
+    requestReload(`${reason} Reloading to free memory.`, {
+      auto: monitor.autoReload !== false
+    });
   }
 
   // Check if it's time for scheduled reload
@@ -479,34 +601,56 @@
     
     if (diffMins < 1 && lastReloadCheck !== todayKey) {
       lastReloadCheck = todayKey;
-      console.log('🕐 WhatsApp Web Improver: Scheduled reload time reached!');
-      
-      if (performanceSettings.showReloadNotification) {
-        showReloadNotification('Scheduled daily reload to maintain performance.');
-      } else {
-        location.reload();
-      }
+      debugLog('🕐 WhatsApp Web Improver: Scheduled reload time reached!');
+      requestReload('Scheduled daily reload to keep things fast.', { auto: true });
     }
   }
 
+  // Uptime-based reload. Independent of performance.memory, which cannot see
+  // the DOM/media growth that actually slows a long WhatsApp Web session down.
+  function checkUptimeReload() {
+    const uptime = performanceSettings.uptimeReload;
+    if (!uptime?.enabled) return;
+
+    const hours = Number(uptime.hours) || defaultPerformanceSettings.uptimeReload.hours;
+    const elapsedHours = (Date.now() - pageLoadedAt) / (60 * 60 * 1000);
+    if (elapsedHours < hours) return;
+
+    requestReload(
+      `WhatsApp Web has been open for ${Math.floor(elapsedHours)} h. Reloading to keep it fast.`,
+      { auto: true }
+    );
+  }
+
+  let performanceMonitoringStarted = false;
+
   // Start performance monitoring
   function startPerformanceMonitoring() {
+    // loadSettings() can run more than once; the timers must not stack up.
+    if (performanceMonitoringStarted) return;
+    performanceMonitoringStarted = true;
+
     // Heartbeat + memory snapshot (low frequency to keep overhead minimal)
     startHeartbeat();
-    
-    // Check memory every 5 minutes
-    setInterval(checkMemoryUsage, 5 * 60 * 1000);
-    
-    // Check scheduled reload every minute
-    setInterval(checkScheduledReload, 60 * 1000);
-    
+
+    // Memory is checked every minute so a spike is caught while it matters;
+    // the reload guards keep that from turning into a reload loop.
+    setInterval(checkMemoryUsage, 60 * 1000);
+
+    // Check scheduled + uptime reload every minute
+    setInterval(() => {
+      checkScheduledReload();
+      checkUptimeReload();
+    }, 60 * 1000);
+
     // Initial check after 1 minute
     setTimeout(() => {
       checkMemoryUsage();
       checkScheduledReload();
+      checkUptimeReload();
     }, 60 * 1000);
-    
-    console.log('WhatsApp Web Improver: Performance monitoring started');
+
+    debugLog('WhatsApp Web Improver: Performance monitoring started');
   }
 
   // ===== MESSAGE NAVIGATION =====
@@ -519,183 +663,68 @@
     styles.id = 'wa-improver-nav-styles';
     styles.textContent = `
       .wa-improver-selected-message {
-        position: relative;
-        outline: 3px solid #25D366 !important;
-        outline-offset: 4px;
-        border-radius: 10px;
-        background-color: rgba(37, 211, 102, 0.15) !important;
-        box-shadow: 0 0 20px rgba(37, 211, 102, 0.4) !important;
-        transition: all 0.15s ease;
-        z-index: 100;
+        outline: 2px solid rgba(37, 211, 102, 0.9) !important;
+        outline-offset: 1px;
+        border-radius: 8px;
+        transition: outline-color 0.12s ease;
       }
-      
-      .wa-improver-selected-message::before {
-        content: '▶';
-        position: absolute;
-        left: -30px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: #25D366;
-        font-size: 18px;
-        animation: wa-pulse 1s ease-in-out infinite;
-      }
-      
-      @keyframes wa-pulse {
-        0%, 100% { opacity: 1; transform: translateY(-50%) scale(1); }
-        50% { opacity: 0.7; transform: translateY(-50%) scale(1.2); }
-      }
-      
+
       .wa-improver-nav-indicator {
         position: fixed;
-        bottom: 100px;
+        bottom: 76px;
         left: 50%;
         transform: translateX(-50%);
-        background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
-        color: white;
-        padding: 12px 24px;
-        border-radius: 25px;
+        background: rgba(20, 26, 24, 0.94);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(37, 211, 102, 0.35);
+        color: #e9f3ee;
+        padding: 5px 12px;
+        border-radius: 999px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 14px;
+        font-size: 11.5px;
+        line-height: 1.4;
+        white-space: nowrap;
         z-index: 999998;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
         display: flex;
         align-items: center;
-        gap: 20px;
-        animation: wa-slideUp 0.3s ease;
+        gap: 10px;
+        pointer-events: none;
+        opacity: 0.95;
       }
-      
-      @keyframes wa-slideUp {
-        from { opacity: 0; transform: translateX(-50%) translateY(20px); }
-        to { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+      .wa-improver-nav-indicator.error {
+        border-color: rgba(240, 110, 110, 0.7);
+        color: #ffd9d9;
       }
-      
+
+      .wa-improver-nav-indicator .nav-position {
+        font-weight: 600;
+        color: #6ee7a0;
+      }
+
+      .wa-improver-nav-indicator .nav-hint {
+        color: #9db3a8;
+      }
+
       .wa-improver-nav-indicator kbd {
-        background: rgba(255,255,255,0.25);
-        padding: 4px 10px;
-        border-radius: 5px;
-        font-family: monospace;
-        font-size: 13px;
-        font-weight: bold;
-        border: 1px solid rgba(255,255,255,0.3);
-      }
-      
-      .wa-improver-nav-indicator .nav-section {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      
-      .wa-improver-nav-indicator .shortcuts {
-        display: flex;
-        gap: 12px;
-        border-left: 2px solid rgba(255,255,255,0.3);
-        padding-left: 20px;
-        margin-left: 10px;
-      }
-      
-      .wa-improver-nav-indicator .shortcut-hint {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        font-size: 12px;
-      }
-      
-      .wa-improver-nav-indicator .msg-counter {
-        background: rgba(0,0,0,0.2);
-        padding: 4px 12px;
-        border-radius: 12px;
-        font-size: 12px;
-        font-weight: bold;
+        background: rgba(255, 255, 255, 0.12);
+        padding: 1px 5px;
+        border-radius: 4px;
+        font-family: inherit;
+        font-size: 10.5px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
       }
     `;
     document.head.appendChild(styles);
   }
 
-  function injectGifPickerStyles() {
+  function injectSlashCommandStyles() {
     if (document.getElementById('wa-improver-gif-styles')) return;
 
     const styles = document.createElement('style');
     styles.id = 'wa-improver-gif-styles';
     styles.textContent = `
-      #${GIF_PICKER_ID} {
-        position: fixed;
-        z-index: 999999;
-        width: 420px;
-        max-width: calc(100vw - 24px);
-        background: #101a16;
-        color: #f2f8f5;
-        border: 1px solid rgba(37, 211, 102, 0.35);
-        border-radius: 12px;
-        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
-        padding: 10px;
-      }
-      #${GIF_PICKER_ID} .wa-gif-title {
-        font-size: 12px;
-        font-weight: 700;
-        opacity: 0.95;
-      }
-      #${GIF_PICKER_ID} .wa-gif-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        margin-bottom: 8px;
-      }
-      #${GIF_PICKER_ID} .wa-gif-close {
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        background: rgba(255, 255, 255, 0.08);
-        color: #f2f8f5;
-        border-radius: 6px;
-        padding: 3px 8px;
-        cursor: pointer;
-        font-size: 11px;
-      }
-      #${GIF_PICKER_ID} .wa-gif-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 8px;
-      }
-      #${GIF_PICKER_ID} .wa-gif-item {
-        border: 2px solid transparent;
-        border-radius: 8px;
-        overflow: hidden;
-        background: #0f2720;
-        padding: 0;
-        cursor: pointer;
-        line-height: 0;
-      }
-      #${GIF_PICKER_ID} .wa-gif-item.selected {
-        border-color: #25D366;
-      }
-      #${GIF_PICKER_ID} .wa-gif-item img {
-        width: 100%;
-        height: 94px;
-        object-fit: cover;
-        display: block;
-      }
-      #${GIF_PICKER_ID} .wa-gif-empty {
-        font-size: 12px;
-        color: #d8e7de;
-        opacity: 0.9;
-      }
-      #${GIF_PICKER_ID} .wa-gif-hint {
-        margin-top: 8px;
-        font-size: 11px;
-        color: #b9ccc1;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-      }
-      #${GIF_PICKER_ID} .wa-gif-count {
-        color: #d8eee3;
-        font-weight: 700;
-      }
-      @media (max-width: 380px) {
-        #${GIF_PICKER_ID} .wa-gif-grid {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-      }
       #${GIF_INDICATOR_ID} {
         position: fixed;
         z-index: 999999;
@@ -1080,7 +1109,6 @@
 
   function openNativeGifPanelWithQuery(query, composer = null) {
     hideGifCommandIndicator();
-    closeGifPicker();
 
     if (composer) {
       clearComposerText(composer, { preserveFocus: true });
@@ -1127,7 +1155,6 @@
 
   function openNativeStickerPanel(composer = null, query = '') {
     hideGifCommandIndicator();
-    closeGifPicker();
     stopGifComposerCleanup();
 
     if (composer) {
@@ -1216,14 +1243,6 @@
     return true;
   }
 
-  function parseGifCommand(text) {
-    if (!text) return null;
-    const draft = parseGifDraft(text);
-    if (!draft.isCommand) return null;
-    const query = draft.query;
-    return query || null;
-  }
-
   function getOrCreateGifIndicator() {
     let indicator = document.getElementById(GIF_INDICATOR_ID);
     if (indicator) return indicator;
@@ -1255,60 +1274,28 @@
       return;
     }
 
-    injectGifPickerStyles();
+    injectSlashCommandStyles();
     const indicator = getOrCreateGifIndicator();
     gifIndicatorComposer = composer;
     indicator.classList.remove('ready');
 
     if (draft.isSuggestion) {
-      indicator.textContent = `${draft.match.slash} · ${draft.match.description} (Tab para completar)`;
+      indicator.textContent = `${draft.match.slash} · ${draft.match.description} (Tab to complete)`;
       if (draft.exact) {
         indicator.classList.add('ready');
       }
     } else if (draft.command === 'sticker') {
       indicator.textContent = draft.query
-        ? `/sticker listo: "${draft.query}" (Enter para abrir stickers)`
-        : '/sticker detectado. Enter para abrir stickers.';
+        ? `/sticker ready: "${draft.query}" (Enter to open stickers)`
+        : '/sticker detected. Enter to open stickers.';
     } else if (!draft.query) {
-      indicator.textContent = '/gif detectado. Escribe el texto a buscar.';
+      indicator.textContent = '/gif detected. Type what to search for.';
     } else {
-      indicator.textContent = `/gif listo: "${draft.query}" (Enter para buscar)`;
+      indicator.textContent = `/gif ready: "${draft.query}" (Enter to search)`;
       indicator.classList.add('ready');
     }
 
     positionGifIndicator(indicator, composer);
-  }
-
-  function closeGifPicker() {
-    const picker = document.getElementById(GIF_PICKER_ID);
-    if (picker) picker.remove();
-    gifPickerVisible = false;
-    gifPickerResults = [];
-    gifPickerSelectedIndex = 0;
-    gifPickerComposer = null;
-  }
-
-  function updateGifPickerSelection() {
-    const picker = document.getElementById(GIF_PICKER_ID);
-    if (!picker) return;
-    picker.querySelectorAll('.wa-gif-item').forEach((button, index) => {
-      button.classList.toggle('selected', index === gifPickerSelectedIndex);
-    });
-    const counter = picker.querySelector('.wa-gif-count');
-    if (counter && gifPickerResults.length > 0) {
-      counter.textContent = `${gifPickerSelectedIndex + 1}/${gifPickerResults.length}`;
-    }
-  }
-
-  function positionGifPicker(picker, composer) {
-    if (!picker || !composer) return;
-    const composerRect = composer.getBoundingClientRect();
-    const width = Math.min(420, window.innerWidth - 24);
-    const left = Math.max(12, Math.min(window.innerWidth - width - 12, composerRect.left));
-    const top = Math.max(12, composerRect.top - 340);
-    picker.style.width = `${width}px`;
-    picker.style.left = `${left}px`;
-    picker.style.top = `${top}px`;
   }
 
   function setComposerText(composer, text) {
@@ -1366,293 +1353,340 @@
     gifCleanupTimer = setTimeout(loop, 120);
   }
 
-  function clickSendComposerMessage(composer) {
-    const footer = composer?.closest('footer') || document.querySelector('footer');
-    const sendIcon = footer?.querySelector('span[data-icon="send"]');
-    const sendButton = sendIcon?.closest('[role="button"], button') || footer?.querySelector('[aria-label*="send" i], [data-testid*="send"]');
-    if (sendButton) {
-      sendButton.click();
+  // Get all visible message elements, document order (oldest first).
+  function getMessageElements() {
+    const panel = document.querySelector(
+      '[data-testid="conversation-panel-messages"], #main [data-tab="8"], #main [role="application"]'
+    ) || document.querySelector('#main');
+
+    if (!panel) return [];
+
+    // WhatsApp renders one [role="row"] per message and virtualises the list,
+    // so this must be re-read on every move rather than cached.
+    let rows = Array.from(panel.querySelectorAll('[role="row"]'));
+
+    if (rows.length === 0) {
+      rows = Array.from(panel.querySelectorAll('div[class*="message-in"], div[class*="message-out"]'));
+    }
+
+    // Two passes. The strict one drops system rows the context menu cannot act
+    // on; the permissive one is the safety net, because WhatsApp obfuscates its
+    // class names and a heuristic that stops matching must not leave the user
+    // with nothing selectable.
+    const candidates = rows.filter(isSelectableRow);
+    const actionable = candidates.filter((row) => !isSystemRow(row));
+
+    return actionable.length > 0 ? actionable : candidates;
+  }
+
+  function isSelectableRow(row) {
+    if (!row || !row.isConnected) return false;
+    if (!row.querySelector('[data-pre-plain-text], [class*="copyable-text"], span[dir]')) return false;
+    return isElementVisible(row);
+  }
+
+  // Call logs, encryption notices, date separators and the unread divider look
+  // like messages but have no editable/replyable body, so acting on them just
+  // makes WhatsApp reject the action.
+  function isSystemRow(row) {
+    // Real messages carry a message id; dividers and notices do not.
+    const hasMessageId = row.hasAttribute?.('data-id') || row.querySelector('[data-id]');
+    if (!hasMessageId) return true;
+
+    // Call logs: a call icon and no text body of their own.
+    if (row.querySelector('[data-icon*="call"], [data-icon*="video"]') &&
+        !row.querySelector('[data-pre-plain-text]')) {
       return true;
     }
+
     return false;
   }
 
-  function sendGifResult(result) {
-    if (gifSendInProgress) return;
-    if (!gifPickerComposer || !result?.itemurl) {
-      closeGifPicker();
-      return;
-    }
+  // Diagnostic helper. WhatsApp obfuscates its markup and changes it often, so
+  // rather than guessing selectors, run window.__waImproverInspect() in the
+  // console on WhatsApp Web to see what each stage of the heuristic matches.
+  window.__waImproverInspect = function inspectMessageRows() {
+    const panel = document.querySelector(
+      '[data-testid="conversation-panel-messages"], #main [data-tab="8"], #main [role="application"]'
+    ) || document.querySelector('#main');
 
-    gifSendInProgress = true;
-    setComposerText(gifPickerComposer, result.itemurl);
-    requestAnimationFrame(() => {
-      clickSendComposerMessage(gifPickerComposer);
-      setTimeout(() => {
-        gifSendInProgress = false;
-      }, 500);
-    });
-    closeGifPicker();
-  }
+    const rows = panel ? Array.from(panel.querySelectorAll('[role="row"]')) : [];
+    const fallbackRows = panel
+      ? Array.from(panel.querySelectorAll('div[class*="message-in"], div[class*="message-out"]'))
+      : [];
+    const selectable = rows.filter(isSelectableRow);
+    const actionable = selectable.filter((row) => !isSystemRow(row));
 
-  async function searchGifResults(query) {
-    const requestUrl = `${TENOR_SEARCH_URL}?q=${encodeURIComponent(query)}&key=${TENOR_PUBLIC_KEY}&limit=${GIF_LIMIT}&media_filter=minimal`;
-    const response = await fetch(requestUrl);
-    if (!response.ok) {
-      throw new Error(`GIF search failed (${response.status})`);
-    }
-    const payload = await response.json();
-    return Array.isArray(payload?.results) ? payload.results : [];
-  }
+    const sample = selectable.slice(-3).map((row) => ({
+      text: (row.textContent || '').trim().slice(0, 40),
+      hasDataId: Boolean(row.hasAttribute('data-id') || row.querySelector('[data-id]')),
+      hasPrePlainText: Boolean(row.querySelector('[data-pre-plain-text]')),
+      hasBubbleClass: Boolean(row.querySelector('div[class*="message-in"], div[class*="message-out"]')),
+      treatedAsSystem: isSystemRow(row)
+    }));
 
-  function openGifPicker(composer, query, results, loading = false) {
-    injectGifPickerStyles();
-    closeGifPicker();
-    hideGifCommandIndicator();
+    const report = {
+      panelFound: Boolean(panel),
+      roleRows: rows.length,
+      bubbleClassRows: fallbackRows.length,
+      selectable: selectable.length,
+      actionable: actionable.length,
+      usingFallback: actionable.length === 0 && selectable.length > 0,
+      sampleOfLast3: sample
+    };
 
-    const picker = document.createElement('div');
-    picker.id = GIF_PICKER_ID;
+    console.log(report);
+    return report;
+  };
 
-    if (loading) {
-      picker.innerHTML = `
-        <div class="wa-gif-header">
-          <div class="wa-gif-title">/gif ${query}</div>
-          <button type="button" class="wa-gif-close">Cerrar</button>
-        </div>
-        <div class="wa-gif-empty">Buscando GIFs...</div>
-      `;
-      document.body.appendChild(picker);
-      picker.querySelector('.wa-gif-close')?.addEventListener('click', () => closeGifPicker());
-      positionGifPicker(picker, composer);
-      gifPickerVisible = true;
-      gifPickerComposer = composer;
-      return;
-    }
-
-    if (!results.length) {
-      picker.innerHTML = `
-        <div class="wa-gif-header">
-          <div class="wa-gif-title">/gif ${query}</div>
-          <button type="button" class="wa-gif-close">Cerrar</button>
-        </div>
-        <div class="wa-gif-empty">No se encontraron GIFs.</div>
-      `;
-      document.body.appendChild(picker);
-      picker.querySelector('.wa-gif-close')?.addEventListener('click', () => closeGifPicker());
-      positionGifPicker(picker, composer);
-      gifPickerVisible = true;
-      gifPickerComposer = composer;
-      return;
-    }
-
-    picker.innerHTML = `
-      <div class="wa-gif-header">
-        <div class="wa-gif-title">/gif ${query}</div>
-        <button type="button" class="wa-gif-close">Cerrar</button>
-      </div>
-      <div class="wa-gif-grid"></div>
-      <div class="wa-gif-hint">
-        <span>Enter enviar, flechas mover, Esc cerrar</span>
-        <span class="wa-gif-count">1/${results.length}</span>
-      </div>
-    `;
-
-    const grid = picker.querySelector('.wa-gif-grid');
-    results.forEach((result, index) => {
-      const previewUrl = result?.media?.[0]?.tinygif?.url || result?.media?.[0]?.nanogif?.url || result?.media?.[0]?.gif?.url;
-      if (!previewUrl) return;
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `wa-gif-item${index === 0 ? ' selected' : ''}`;
-      button.setAttribute('aria-label', `GIF ${index + 1}`);
-      button.innerHTML = `<img src="${previewUrl}" alt="GIF ${index + 1}" loading="lazy">`;
-      button.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        sendGifResult(result);
-      });
-      grid?.appendChild(button);
-    });
-
-    document.body.appendChild(picker);
-    picker.querySelector('.wa-gif-close')?.addEventListener('click', () => closeGifPicker());
-    positionGifPicker(picker, composer);
-    gifPickerVisible = true;
-    gifPickerResults = results;
-    gifPickerSelectedIndex = 0;
-    gifPickerComposer = composer;
-  }
-  
-  // Get all visible message elements
-  function getMessageElements() {
-    // WhatsApp message rows - look for message containers
-    const messages = document.querySelectorAll('[data-id][class*="message"], div[class*="message-out"], div[class*="message-in"], [data-pre-plain-text]');
-    
-    // Filter to get actual message bubbles
-    let msgElements = [];
-    
-    // Try different selectors for message bubbles
-    const possibleSelectors = [
-      '[data-pre-plain-text]',
-      '[class*="focusable-list-item"]',
-      'div[class*="_amk4"]',
-      'div[tabindex="-1"][class*="message"]'
-    ];
-    
-    for (const selector of possibleSelectors) {
-      const found = document.querySelectorAll(selector);
-      if (found.length > 0) {
-        msgElements = Array.from(found);
-        break;
-      }
-    }
-    
-    // Fallback: find message rows in the chat
-    if (msgElements.length === 0) {
-      const chatContainer = document.querySelector('[data-tab="8"]') || 
-                           document.querySelector('[role="application"]')?.closest('div[tabindex]')?.parentElement;
-      if (chatContainer) {
-        // Look for rows that contain message content
-        const rows = chatContainer.querySelectorAll('[role="row"], div[class*="copyable-text"]');
-        msgElements = Array.from(rows).filter(row => {
-          return row.querySelector('[data-pre-plain-text]') || 
-                 row.textContent.trim().length > 0;
-        });
-      }
-    }
-    
-    return msgElements;
-  }
-  
   // Show navigation indicator
   function showNavigationIndicator() {
     let indicator = document.getElementById('wa-improver-nav-indicator');
-    
+
     if (!indicator) {
       indicator = document.createElement('div');
       indicator.id = 'wa-improver-nav-indicator';
       indicator.className = 'wa-improver-nav-indicator';
       document.body.appendChild(indicator);
     }
-    
+
     updateNavigationIndicator();
   }
-  
+
   // Update the indicator with current position
   function updateNavigationIndicator() {
     const indicator = document.getElementById('wa-improver-nav-indicator');
     if (!indicator) return;
-    
+
     const current = selectedMessageIndex + 1;
     const total = messageElements.length;
-    
+
+    // Deliberately terse: this floats over the chat the whole time navigation
+    // is on, so it lists the position and the keys, nothing else.
     indicator.innerHTML = `
-      <span class="nav-section">📍 <strong>Message ${current} of ${total}</strong></span>
-      <span class="nav-section"><kbd>↑</kbd><kbd>↓</kbd> Move</span>
-      <span class="shortcuts">
-        <span class="shortcut-hint"><kbd>${shortcuts.edit?.key || 'e'}</kbd> Edit</span>
-        <span class="shortcut-hint"><kbd>${shortcuts.reply?.key || 'r'}</kbd> Reply</span>
-        <span class="shortcut-hint"><kbd>${shortcuts.delete?.key || 'd'}</kbd> Del</span>
-        <span class="shortcut-hint"><kbd>${shortcuts.star?.key || 's'}</kbd> Star</span>
-        <span class="shortcut-hint"><kbd>Esc</kbd> Exit</span>
-      </span>
+      <span class="nav-position">${current}/${total}</span>
+      <span class="nav-hint"><kbd>\u2191</kbd><kbd>\u2193</kbd> move \u00b7 <kbd>${shortcuts.edit?.key || 'e'}</kbd><kbd>${shortcuts.reply?.key || 'r'}</kbd><kbd>${shortcuts.delete?.key || 'd'}</kbd> actions \u00b7 <kbd>Esc</kbd> exit</span>
     `;
   }
-  
+
   // Hide navigation indicator
   function hideNavigationIndicator() {
     const indicator = document.getElementById('wa-improver-nav-indicator');
     if (indicator) indicator.remove();
   }
-  
-  // Highlight selected message
-  function highlightMessage(index) {
-    // Remove previous highlight
-    document.querySelectorAll('.wa-improver-selected-message').forEach(el => {
+
+  // A failed attempt can leave WhatsApp's context menu hanging open over the
+  // chat; Escape is what WhatsApp itself listens for to dismiss it.
+  function closeStrayContextMenu() {
+    if (!findContextMenu()) return;
+    document.body.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      bubbles: true,
+      cancelable: true
+    }));
+    contextMenuOpen = false;
+    currentContextMenu = null;
+  }
+
+  const ACTION_LABELS = {
+    edit: 'Edit',
+    delete: 'Delete',
+    reply: 'Reply',
+    forward: 'Forward',
+    star: 'Star',
+    info: 'Info',
+    copy: 'Copy',
+    pin: 'Pin'
+  };
+
+  let navigationErrorTimer = null;
+
+  function showNavigationError(action) {
+    const indicator = document.getElementById('wa-improver-nav-indicator');
+    if (!indicator) return;
+
+    indicator.classList.add('error');
+    const label = ACTION_LABELS[action] || action;
+    const slot = indicator.querySelector('.nav-position');
+    if (slot) slot.textContent = `${label} unavailable`;
+
+    if (navigationErrorTimer) clearTimeout(navigationErrorTimer);
+    navigationErrorTimer = setTimeout(() => {
+      indicator.classList.remove('error');
+      updateNavigationIndicator();
+    }, 1800);
+  }
+
+  function clearMessageHighlight() {
+    document.querySelectorAll('.wa-improver-selected-message').forEach((el) => {
       el.classList.remove('wa-improver-selected-message');
     });
-    
-    if (index >= 0 && index < messageElements.length) {
-      const msg = messageElements[index];
-      msg.classList.add('wa-improver-selected-message');
-      
-      // Scroll into view
-      msg.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      
-      // Update the indicator counter
-      updateNavigationIndicator();
-      
-      console.log(`📍 WhatsApp Web Improver: Selected message ${index + 1}/${messageElements.length}`);
-    }
   }
-  
+
+  // Highlight selected message
+  function highlightMessage(index, options = {}) {
+    const { scroll = true } = options;
+    clearMessageHighlight();
+
+    if (index < 0 || index >= messageElements.length) return;
+
+    const msg = messageElements[index];
+    selectedMessageElement = msg;
+    msg.classList.add('wa-improver-selected-message');
+
+    if (scroll) {
+      // 'auto' rather than 'smooth': a queued smooth scroll fights the next
+      // keypress when the user holds the arrow down.
+      msg.scrollIntoView({ behavior: 'auto', block: 'center' });
+    }
+
+    updateNavigationIndicator();
+    debugLog(`\u{1F4CD} WhatsApp Web Improver: Selected message ${index + 1}/${messageElements.length}`);
+  }
+
+  // Re-read the list and locate the previously selected message in it. The
+  // virtualised list swaps nodes as it scrolls, so the old index is unreliable.
+  function refreshMessageElements() {
+    const previous = selectedMessageElement;
+    messageElements = getMessageElements();
+
+    if (messageElements.length === 0) {
+      selectedMessageIndex = -1;
+      return false;
+    }
+
+    if (previous && previous.isConnected) {
+      const foundIndex = messageElements.indexOf(previous);
+      if (foundIndex !== -1) {
+        selectedMessageIndex = foundIndex;
+        return true;
+      }
+    }
+
+    selectedMessageIndex = Math.min(
+      Math.max(selectedMessageIndex, 0),
+      messageElements.length - 1
+    );
+    return true;
+  }
+
+  function moveSelection(delta) {
+    if (!refreshMessageElements()) {
+      exitNavigationMode();
+      return;
+    }
+
+    const nextIndex = selectedMessageIndex + delta;
+
+    // Past the newest message: drop back to the composer, which is what the
+    // user is reaching for anyway.
+    if (nextIndex >= messageElements.length) {
+      exitNavigationMode({ focusComposer: true });
+      return;
+    }
+
+    if (nextIndex < 0) {
+      // Oldest rendered message: WhatsApp loads more as we scroll, so nudge the
+      // list up and try to keep going instead of dead-ending.
+      messageElements[0]?.scrollIntoView({ behavior: 'auto', block: 'center' });
+      return;
+    }
+
+    selectedMessageIndex = nextIndex;
+    highlightMessage(selectedMessageIndex);
+  }
+
   // Enter message navigation mode
   function enterNavigationMode() {
     messageElements = getMessageElements();
-    
+
     if (messageElements.length === 0) {
-      console.log('❌ WhatsApp Web Improver: No messages found');
+      debugLog('\u274C WhatsApp Web Improver: No messages found');
       return false;
     }
-    
+
     messageNavigationMode = true;
     navigationModeEnteredAt = Date.now(); // Record entry time
     selectedMessageIndex = messageElements.length - 1; // Start from last message
-    
+    selectedMessageElement = messageElements[selectedMessageIndex];
+
+    // WhatsApp keeps focus in the composer and re-focuses the last message on
+    // its own; blurring hands the arrows over to us cleanly.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
     injectNavigationStyles();
     showNavigationIndicator();
     highlightMessage(selectedMessageIndex);
-    
-    console.log(`🎯 WhatsApp Web Improver: Navigation mode ON (${messageElements.length} messages)`);
+
+    debugLog(`\u{1F3AF} WhatsApp Web Improver: Navigation mode ON (${messageElements.length} messages)`);
     return true;
   }
-  
+
   // Exit message navigation mode
-  function exitNavigationMode() {
+  function exitNavigationMode(options = {}) {
+    const { focusComposer = false } = options;
+
     messageNavigationMode = false;
     navigationActionInProgress = false;
     selectedMessageIndex = -1;
+    selectedMessageElement = null;
     messageElements = [];
-    
-    // Remove highlight
-    document.querySelectorAll('.wa-improver-selected-message').forEach(el => {
-      el.classList.remove('wa-improver-selected-message');
-    });
-    
+
+    clearMessageHighlight();
     hideNavigationIndicator();
-    console.log('🎯 WhatsApp Web Improver: Navigation mode OFF');
+
+    // Entering navigation blurs the composer, so hand the focus back when the
+    // user is leaving in order to type rather than clicking elsewhere.
+    if (focusComposer) {
+      getActiveComposer()?.focus();
+    }
+
+    debugLog('🎯 WhatsApp Web Improver: Navigation mode OFF');
   }
-  
+
   // Trigger action on selected message
   function triggerActionOnSelectedMessage(action) {
-    console.log(`🎯 triggerActionOnSelectedMessage called with action: "${action}"`);
+    debugLog(`🎯 triggerActionOnSelectedMessage called with action: "${action}"`);
 
     if (navigationActionInProgress) {
-      console.log('⏳ Navigation action already in progress, ignoring key press');
+      debugLog('⏳ Navigation action already in progress, ignoring key press');
       return false;
     }
-    
-    if (selectedMessageIndex < 0 || selectedMessageIndex >= messageElements.length) {
-      console.log('❌ Invalid message index');
+
+    // The row may have been recycled by the virtualised list since selection.
+    if (!refreshMessageElements()) {
+      exitNavigationMode();
+      return false;
+    }
+
+    const msg = messageElements[selectedMessageIndex];
+    if (!msg) {
+      debugLog('❌ Invalid message index');
+      exitNavigationMode();
       return false;
     }
 
     navigationActionInProgress = true;
-    
-    const msg = messageElements[selectedMessageIndex];
-    
+
     // Find the message bubble/container to right-click on
-    const targetElement = msg.querySelector('[data-pre-plain-text]') || 
+    const targetElement = msg.querySelector('[data-pre-plain-text]') ||
                 msg.querySelector('[class*="copyable-text"]') ||
                 msg;
-    
-    console.log(`🎯 WhatsApp Web Improver: Triggering "${action}" on selected message`, targetElement);
+
+    debugLog(`🎯 WhatsApp Web Improver: Triggering "${action}" on selected message`, targetElement);
 
     const finishWithFailure = () => {
-      console.log('❌ Failed to trigger action after retries');
+      debugLog('❌ Failed to trigger action after retries');
       navigationActionInProgress = false;
-      exitNavigationMode();
+
+      // Staying in navigation mode keeps the selection and the keyboard focus,
+      // so an action WhatsApp refuses (editing someone else's message, editing
+      // past the time limit) does not throw the user out of the flow.
+      closeStrayContextMenu();
+      showNavigationError(action);
     };
 
     const finishWithSuccess = () => {
@@ -1683,21 +1717,37 @@
 
         let remainingClickAttempts = 8;
 
-        const attemptClick = (menuCandidate = null) => {
-          if (clickMenuItemByAction(action, menuCandidate, false)) {
-            finishWithSuccess();
-            return;
-          }
-
+        const retry = () => {
           remainingClickAttempts -= 1;
           if (remainingClickAttempts <= 0) {
             finishWithFailure();
             return;
           }
+          setTimeout(() => attemptClick(findContextMenu()), 120);
+        };
 
+        const attemptClick = (menuCandidate = null) => {
+          const menuBeforeClick = menuCandidate || findContextMenu();
+
+          if (!clickMenuItemByAction(action, menuCandidate, false)) {
+            retry();
+            return;
+          }
+
+          // Dispatching the click is not proof it landed. WhatsApp closes the
+          // menu when an action actually runs, so that is the signal.
           setTimeout(() => {
-            attemptClick(findContextMenu());
-          }, 120);
+            const menuStillOpen = menuBeforeClick
+              && menuBeforeClick.isConnected
+              && isElementVisible(menuBeforeClick);
+
+            if (menuStillOpen) {
+              retry();
+              return;
+            }
+
+            finishWithSuccess();
+          }, 180);
         };
 
         attemptClick(activeMenu);
@@ -1773,12 +1823,12 @@
           if (menu) {
             contextMenuOpen = true;
             currentContextMenu = menu;
-            console.log('WhatsApp Web Improver: ✓ Context menu detected!');
-            console.log('Menu element:', menu);
+            debugLog('WhatsApp Web Improver: ✓ Context menu detected!');
+            debugLog('Menu element:', menu);
             
             // Log available menu items for debugging
             const items = menu.querySelectorAll('[role="button"], li, div[tabindex]');
-            console.log(`Found ${items.length} menu items:`, Array.from(items).map(i => i.textContent.trim()));
+            debugLog(`Found ${items.length} menu items:`, Array.from(items).map(i => i.textContent.trim()));
           }
         }
       });
@@ -1787,16 +1837,22 @@
         if (node === currentContextMenu || (node.nodeType === 1 && node.contains(currentContextMenu))) {
           contextMenuOpen = false;
           currentContextMenu = null;
-          console.log('WhatsApp Web Improver: Context menu closed');
+          debugLog('WhatsApp Web Improver: Context menu closed');
         }
       });
     });
   });
 
   function clickElementReliably(element) {
-    if (!element) return false;
+    // The element can be detached or hidden by the time we get here: WhatsApp
+    // re-renders menus constantly. Reporting success in that case is what made
+    // the retry loops give up on the first attempt.
+    if (!element || !element.isConnected) return false;
 
     const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (!isElementVisible(element)) return false;
+
     const x = Math.round(rect.left + Math.max(8, Math.min(rect.width - 8, rect.width / 2)));
     const y = Math.round(rect.top + Math.max(8, Math.min(rect.height - 8, rect.height / 2)));
 
@@ -1813,7 +1869,7 @@
     element.dispatchEvent(new MouseEvent('mousedown', base));
     element.dispatchEvent(new MouseEvent('mouseup', base));
     element.dispatchEvent(new MouseEvent('click', base));
-    element.click();
+    if (element.isConnected) element.click();
     return true;
   }
 
@@ -1868,13 +1924,40 @@
     );
   }
 
-  function canEnterNavigationMode(eventTarget, allowComposer = false) {
-    const target = eventTarget instanceof Element ? eventTarget : document.activeElement;
-    return isChatAreaTarget(target, allowComposer);
+  // Two ways in, because neither alone covers every situation:
+  //  - Alt+ArrowUp works anywhere, including mid-draft, and never collides with
+  //    WhatsApp's own arrow handling.
+  //  - plain ArrowUp works from an empty composer (where WhatsApp parks the
+  //    focus by default) or from the message list when not typing.
+  function shouldEnterNavigationModeOnArrowUp(event) {
+    if (!messageNavigationEnabled) return false;
+    if (messageNavigationMode) return false;
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return false;
+    if (contextMenuOpen) return false;
+    if (document.getElementById(GIF_INDICATOR_ID)) return false;
+
+    const target = event.target instanceof Element ? event.target : document.activeElement;
+    if (!target) return false;
+
+    // Modifier path: no restriction on where the focus is.
+    if (event.altKey) return true;
+
+    const composer = getComposerFromTarget(target);
+    if (composer) {
+      // Only from an empty composer: otherwise we would hijack cursor movement
+      // in a draft the user is writing.
+      return getComposerText(composer) === '';
+    }
+
+    if (isTypingTarget(target)) return false;
+
+    return isChatAreaTarget(target);
   }
 
-  // Listen for keypress events
-  document.addEventListener('keydown', (e) => {
+  // Bound on window rather than document: capture runs window -> document, so
+  // this is the earliest point we can intercept a key before WhatsApp's own
+  // handlers see it (notably its native ArrowUp "edit last message").
+  window.addEventListener('keydown', (e) => {
     const pressedKey = e.key;
     const pressedKeyLower = pressedKey.toLowerCase();
     const isTyping = isTypingTarget(e.target);
@@ -1901,42 +1984,6 @@
       }
     }
 
-    if (gifPickerVisible) {
-      if (pressedKey === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        closeGifPicker();
-        return;
-      }
-
-      if ((pressedKey === 'ArrowRight' || pressedKey === 'ArrowDown') && gifPickerResults.length > 0) {
-        e.preventDefault();
-        e.stopPropagation();
-        gifPickerSelectedIndex = (gifPickerSelectedIndex + 1) % gifPickerResults.length;
-        updateGifPickerSelection();
-        return;
-      }
-
-      if ((pressedKey === 'ArrowLeft' || pressedKey === 'ArrowUp') && gifPickerResults.length > 0) {
-        e.preventDefault();
-        e.stopPropagation();
-        gifPickerSelectedIndex = (gifPickerSelectedIndex - 1 + gifPickerResults.length) % gifPickerResults.length;
-        updateGifPickerSelection();
-        return;
-      }
-
-      if (pressedKey === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const selected = gifPickerResults[gifPickerSelectedIndex];
-        if (selected) {
-          e.preventDefault();
-          e.stopPropagation();
-          e.stopImmediatePropagation();
-          sendGifResult(selected);
-          return;
-        }
-      }
-    }
-
     if (composerTarget && pressedKey === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       if (handleSlashCommandInvocation(composerTarget, e)) {
         return;
@@ -1949,76 +1996,82 @@
       currentContextMenu = null;
     }
 
-    const navEnabled = false;
-    
+    // WhatsApp binds its own arrow handling and steals focus to the last
+    // message, so every key we own has to be swallowed before it gets there.
+    const swallow = () => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    };
+
     // Handle navigation mode keys
     if (messageNavigationMode) {
       if (navigationActionInProgress) {
         if (pressedKey === 'Escape') {
-          e.preventDefault();
-          e.stopPropagation();
+          swallow();
           navigationActionInProgress = false;
           exitNavigationMode();
         } else if (pressedKey === 'ArrowUp' || pressedKey === 'ArrowDown') {
-          e.preventDefault();
-          e.stopPropagation();
+          swallow();
         }
         return;
       }
 
       // Escape to exit
       if (pressedKey === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        exitNavigationMode();
+        swallow();
+        exitNavigationMode({ focusComposer: true });
         return;
       }
-      
+
       // Arrow Up - previous message
       if (pressedKey === 'ArrowUp') {
-        e.preventDefault();
-        e.stopPropagation();
-        if (selectedMessageIndex > 0) {
-          selectedMessageIndex--;
-          highlightMessage(selectedMessageIndex);
-        }
+        swallow();
+        moveSelection(-1);
         return;
       }
-      
+
       // Arrow Down - next message
       if (pressedKey === 'ArrowDown') {
-        e.preventDefault();
-        e.stopPropagation();
-        if (selectedMessageIndex < messageElements.length - 1) {
-          selectedMessageIndex++;
-          highlightMessage(selectedMessageIndex);
-        } else {
-          // Exit navigation if we go past the last message
-          exitNavigationMode();
-        }
+        swallow();
+        moveSelection(1);
         return;
       }
-      
+
       // Check for action shortcuts (only after a short delay to prevent accidental triggers)
       const timeSinceEntry = Date.now() - navigationModeEnteredAt;
-      console.log(`⌨️ Nav mode key: "${pressedKeyLower}", time since entry: ${timeSinceEntry}ms`);
-      
+
       if (timeSinceEntry > 300) { // 300ms delay before allowing actions
-        if (navigationActionInProgress || e.repeat) {
+        if (e.repeat) return;
+
+        const action = getActionForKey(pressedKeyLower);
+        if (action) {
+          debugLog(`🎯 Triggering action: ${action}`);
+          swallow();
+          triggerActionOnSelectedMessage(action);
           return;
         }
-
-        for (const [action, config] of Object.entries(shortcuts)) {
-          if (config.enabled && config.key === pressedKeyLower) {
-            console.log(`🎯 Triggering action: ${action}`);
-            e.preventDefault();
-            e.stopPropagation();
-            triggerActionOnSelectedMessage(action);
-            return;
-          }
-        }
       } else {
-        console.log('⏳ Ignoring key - too soon after entering navigation mode');
+        debugLog('⏳ Ignoring key - too soon after entering navigation mode');
+      }
+
+      // Any other key ends navigation so the user can just start typing.
+      if (pressedKey.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        exitNavigationMode({ focusComposer: true });
+      }
+      return;
+    }
+
+    if (pressedKey === 'ArrowUp' && shouldEnterNavigationModeOnArrowUp(e)) {
+      // Only swallow once we know we actually took over. Swallowing first would
+      // eat the key whenever no message could be selected, which looks exactly
+      // like the extension being broken.
+      //
+      // WhatsApp binds ArrowUp in an empty composer to "edit last message";
+      // suppressing it here is what stops that native edit from firing too.
+      if (enterNavigationMode()) {
+        swallow();
+        return;
       }
     }
 
@@ -2031,7 +2084,7 @@
 
     // Log all keypress when menu is open for debugging
     if (contextMenuOpen) {
-      console.log(`⌨️  WhatsApp Web Improver: Key "${pressedKeyLower}" pressed (menu open: ${contextMenuOpen})`);
+      debugLog(`⌨️  WhatsApp Web Improver: Key "${pressedKeyLower}" pressed (menu open: ${contextMenuOpen})`);
     }
 
     const actionForKey = getActionForKey(pressedKeyLower);
@@ -2039,10 +2092,10 @@
 
     const menuDetected = ensureContextMenuOpen();
 
-    console.log(`🎯 WhatsApp Web Improver: Matched shortcut "${pressedKeyLower}" → "${actionForKey}"`);
+    debugLog(`🎯 WhatsApp Web Improver: Matched shortcut "${pressedKeyLower}" → "${actionForKey}"`);
     
     if (!menuDetected) {
-      console.log('⚠️ WhatsApp Web Improver: Menu container not detected, trying visible action fallback');
+      debugLog('⚠️ WhatsApp Web Improver: Menu container not detected, trying visible action fallback');
     }
 
     if (clickMenuItemByAction(actionForKey, menuDetected ? currentContextMenu : null)) {
@@ -2080,15 +2133,6 @@
 
   // Also exit navigation mode when clicking anywhere
   document.addEventListener('click', (event) => {
-    if (gifPickerVisible) {
-      const picker = document.getElementById(GIF_PICKER_ID);
-      const clickedInsidePicker = picker?.contains(event.target);
-      const clickedComposer = gifPickerComposer?.contains(event.target);
-      if (!clickedInsidePicker && !clickedComposer) {
-        closeGifPicker();
-      }
-    }
-    
     if (gifIndicatorComposer && !gifIndicatorComposer.contains(event.target)) {
       hideGifCommandIndicator();
     }
@@ -2099,13 +2143,6 @@
   }, true);
 
   window.addEventListener('resize', () => {
-    if (gifPickerVisible) {
-      const picker = document.getElementById(GIF_PICKER_ID);
-      if (picker && gifPickerComposer) {
-        positionGifPicker(picker, gifPickerComposer);
-      }
-    }
-
     const indicator = document.getElementById(GIF_INDICATOR_ID);
     if (indicator && gifIndicatorComposer) {
       positionGifIndicator(indicator, gifIndicatorComposer);
@@ -2131,7 +2168,7 @@
     const draft = parseSlashCommandDraft(currentText);
     if (draft.isCommand) {
       showGifCommandIndicator(composer, draft);
-    } else if (!gifPickerVisible) {
+    } else {
       hideGifCommandIndicator();
     }
   }, true);
@@ -2142,7 +2179,7 @@
     subtree: true
   });
 
-  console.log('WhatsApp Web Improver: Monitoring for context menus...');
+  debugLog('WhatsApp Web Improver: Monitoring for context menus...');
 
   // ===== HEADER OPTIONS BUTTON =====
 
@@ -2410,7 +2447,7 @@
     }
 
     updateMemoryWidget();
-    console.log('WhatsApp Web Improver: Memory widget injected');
+    debugLog('WhatsApp Web Improver: Memory widget injected');
   }
 
   function findHeaderAnchorButton() {
@@ -2479,7 +2516,7 @@
       const floatingBtn = createOptionsButton();
       document.body.appendChild(floatingBtn);
       positionFloatingOptionsButton(floatingBtn);
-      console.log('WhatsApp Web Improver: Floating options button injected');
+      debugLog('WhatsApp Web Improver: Floating options button injected');
       return;
     }
 
@@ -2488,20 +2525,20 @@
 
     if (newChatBtn && newChatBtn.parentElement === actionsRow) {
       actionsRow.insertBefore(btn, newChatBtn);
-      console.log('WhatsApp Web Improver: Options button injected next to new message');
+      debugLog('WhatsApp Web Improver: Options button injected next to new message');
       return;
     }
 
     const menuButton = Array.from(actionsRow.querySelectorAll('[role="button"]')).pop();
     if (menuButton) {
       actionsRow.insertBefore(btn, menuButton);
-      console.log('WhatsApp Web Improver: Options button injected before menu button');
+      debugLog('WhatsApp Web Improver: Options button injected before menu button');
       return;
     }
 
     actionsRow.appendChild(btn);
 
-    console.log('WhatsApp Web Improver: Options button injected');
+    debugLog('WhatsApp Web Improver: Options button injected');
   }
 
   function toggleOptionsPanel(anchorBtn) {
@@ -2603,6 +2640,18 @@
     }, 200);
   }
 
+  // WhatsApp mutates <body> continuously while scrolling or typing. Injecting
+  // the widget on every mutation meant re-reading memory hundreds of times a
+  // second, which is what made the extension itself feel heavy.
+  function scheduleInjectMemoryWidget() {
+    if (memoryWidgetDebounceTimer) return;
+
+    memoryWidgetDebounceTimer = setTimeout(() => {
+      memoryWidgetDebounceTimer = null;
+      injectMemoryWidget();
+    }, 500);
+  }
+
   function startOptionsButtonObserver() {
     if (optionsButtonObserver || !document.body) return;
 
@@ -2610,8 +2659,14 @@
     injectMemoryWidget();
 
     optionsButtonObserver = new MutationObserver(() => {
-      scheduleInjectOptionsButton();
-      injectMemoryWidget();
+      // The widget only needs re-injecting when it is actually gone; that check
+      // is a cheap id lookup compared to the work injectMemoryWidget does.
+      if (!document.getElementById('wa-improver-options-btn')) {
+        scheduleInjectOptionsButton();
+      }
+      if (!document.getElementById('wa-improver-memory-widget')) {
+        scheduleInjectMemoryWidget();
+      }
     });
 
     optionsButtonObserver.observe(document.body, {
@@ -2624,10 +2679,11 @@
   startOptionsButtonObserver();
   applyWhatsAppScale(loadStoredUiScale(), false);
 
+  // Safety net for anything the observer missed; the observer handles the
+  // common case, so this only needs to re-check, not re-do the work.
   setInterval(() => {
     injectOptionsButton();
     injectMemoryWidget();
-    updateMemoryWidget();
     applyWhatsAppScale(currentUiScale, false);
 
     const panel = document.getElementById('wa-improver-options-panel');

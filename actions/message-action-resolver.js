@@ -9,6 +9,10 @@
       isElementVisible
     } = config;
 
+    const debugLog = (...args) => {
+      if (window.__WA_IMPROVER_DEBUG) console.log(...args);
+    };
+
     function normalizeText(value) {
       return (value || '')
         .toLowerCase()
@@ -109,7 +113,7 @@
           menu.querySelectorAll('[role="menuitem"], [role="button"], li[tabindex], div[tabindex], li, button')
         ).filter(isElementVisible);
 
-        console.log(`🔍 WhatsApp Web Improver: Looking for "${action}" action among ${menuItems.length} menu items`);
+        debugLog(`🔍 WhatsApp Web Improver: Looking for "${action}" action among ${menuItems.length} menu items`);
 
         const keywords = (actionKeywords[action] || []).map(normalizeText);
 
@@ -120,17 +124,17 @@
 
           for (const keyword of keywords) {
             if (text.includes(keyword) || ariaLabel.includes(keyword) || title.includes(keyword)) {
-              console.log(`✓ WhatsApp Web Improver: "${action}" button found! Clicking...`);
+              debugLog(`✓ WhatsApp Web Improver: "${action}" button found! Clicking...`);
               return { clicked: clickElementReliably(item), menu };
             }
           }
         }
 
-        console.log(`❌ WhatsApp Web Improver: "${action}" button not found inside active menu`);
+        debugLog(`❌ WhatsApp Web Improver: "${action}" button not found inside active menu`);
       } else {
         const scopedCandidate = findMenuScopedActionCandidate(action);
         if (scopedCandidate) {
-          console.log(`✓ WhatsApp Web Improver: Menu-scoped fallback found "${action}" item. Clicking...`);
+          debugLog(`✓ WhatsApp Web Improver: Menu-scoped fallback found "${action}" item. Clicking...`);
           return {
             clicked: clickElementReliably(scopedCandidate),
             menu: domAdapter.getMenuContainerForItem(scopedCandidate)
@@ -138,17 +142,17 @@
         }
 
         if (!allowGlobalFallback) {
-          console.log('❌ WhatsApp Web Improver: Active menu not detected for selected-message action');
+          debugLog('❌ WhatsApp Web Improver: Active menu not detected for selected-message action');
           return { clicked: false, menu: null };
         }
 
-        console.log('⚠️ WhatsApp Web Improver: Active menu not detected, trying global action fallback');
+        debugLog('⚠️ WhatsApp Web Improver: Active menu not detected, trying global action fallback');
       }
 
       if (!allowGlobalFallback) {
         const scopedCandidate = findMenuScopedActionCandidate(action);
         if (scopedCandidate) {
-          console.log(`✓ WhatsApp Web Improver: Menu-scoped fallback found "${action}" item. Clicking...`);
+          debugLog(`✓ WhatsApp Web Improver: Menu-scoped fallback found "${action}" item. Clicking...`);
           return {
             clicked: clickElementReliably(scopedCandidate),
             menu: domAdapter.getMenuContainerForItem(scopedCandidate)
@@ -159,14 +163,14 @@
 
       const fallbackItem = findVisibleActionCandidate(action);
       if (fallbackItem) {
-        console.log(`✓ WhatsApp Web Improver: Fallback found "${action}" item. Clicking...`);
+        debugLog(`✓ WhatsApp Web Improver: Fallback found "${action}" item. Clicking...`);
         return {
           clicked: clickElementReliably(fallbackItem),
           menu: domAdapter.getMenuContainerForItem(fallbackItem)
         };
       }
 
-      console.log(`❌ WhatsApp Web Improver: "${action}" action not found in visible UI`);
+      debugLog(`❌ WhatsApp Web Improver: "${action}" action not found in visible UI`);
       return { clicked: false, menu: null };
     }
 

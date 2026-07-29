@@ -194,6 +194,9 @@ main {
   border-radius: 10px;
   background: #fafcfb;
   overflow: hidden;
+  /* main is a bounded flex column, so without this the panels shrink to a few
+     pixels and their content is clipped instead of scrolling with main. */
+  flex: 0 0 auto;
 }
 
 .panel summary {

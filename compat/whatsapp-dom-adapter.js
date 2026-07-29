@@ -35,6 +35,9 @@
       );
     }
 
+    // Runs against every node WhatsApp inserts, so the cheap DOM checks have to
+    // reject before anything touches layout (getBoundingClientRect /
+    // getComputedStyle force a synchronous reflow).
     function isContextMenu(node) {
       if (!node || !node.querySelector) return false;
 
@@ -42,10 +45,14 @@
       if (node.getAttribute && node.getAttribute('role') === 'row') return false;
       if (!hasMenuContainerRole(node) && !hasMenuLikeDescendants(node)) return false;
 
-      const items = Array.from(getMenuItemsForNode(node)).filter(isElementVisible);
-      if (items.length < 2 || items.length > 16) return false;
+      // Node count is free; the visibility filter is not.
+      const rawItems = getMenuItemsForNode(node);
+      if (rawItems.length < 2) return false;
 
       if (!isElementVisible(node) || !isMenuSizeReasonable(node)) return false;
+
+      const items = Array.from(rawItems).filter(isElementVisible);
+      if (items.length < 2 || items.length > 16) return false;
 
       return true;
     }
