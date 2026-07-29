@@ -11,6 +11,24 @@ A Chrome extension that adds configurable keyboard shortcuts to WhatsApp Web, si
 - **🌍 Multi-language Support**: Works with WhatsApp in different languages
 - **🚀 Lightweight**: Fast and efficient, no performance impact
 
+### Slash Commands
+
+Type `/` in the composer to open a command menu:
+
+| Key | What it does |
+|-----|--------------|
+| `↑` / `↓` | Move through the list |
+| `Tab` or `Enter` | Pick the highlighted command |
+| `Enter` | Run it, once its argument is typed |
+| `Esc` | Close the menu |
+
+| Command | What it does |
+|---------|--------------|
+| `/gif <search>` | Opens WhatsApp's native GIF panel with your search |
+| `/sticker [search]` | Opens the sticker panel |
+
+The menu filters as you type (`/g` narrows to `/gif`), and gets out of the way if the text turns out not to be a command. Adding a command is one entry in `SLASH_COMMAND_DEFINITIONS` in `content.js` plus its handler in `handleSlashCommandInvocation`.
+
 ### Message Navigation
 
 Press <kbd>↑</kbd> from an empty composer (or <kbd>Alt</kbd>+<kbd>↑</kbd> from anywhere, even mid-draft) to select the last message. Then:

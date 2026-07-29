@@ -39,12 +39,27 @@
   const UI_SCALE_MIN = 85;
   const UI_SCALE_MAX = 130;
   const UI_SCALE_STEP = 5;
-  const STICKER_COMMAND_PREFIX = '/sticker';
+  // The slash-command registry. Adding an entry here is all a new command needs
+  // to show up in the menu; execution is wired in handleSlashCommandInvocation.
   const SLASH_COMMAND_DEFINITIONS = [
-    { command: 'gif', slash: '/gif', description: 'Search GIFs' },
-    { command: 'sticker', slash: '/sticker', description: 'Open stickers' }
+    {
+      command: 'gif',
+      slash: '/gif',
+      icon: 'GIF',
+      description: 'Search GIFs',
+      argHint: 'search text',
+      argRequired: true
+    },
+    {
+      command: 'sticker',
+      slash: '/sticker',
+      icon: '☺',
+      description: 'Open stickers',
+      argHint: 'search text (optional)',
+      argRequired: false
+    }
   ];
-  const GIF_INDICATOR_ID = 'wa-improver-gif-indicator';
+  const SLASH_MENU_ID = 'wa-improver-slash-menu';
 
   // Status + memory reporting (shared with popup/options)
   const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
@@ -53,7 +68,9 @@
   let lastMemoryReportAt = 0;
   let currentUiScale = 100;
   let extensionContextInvalid = false;
-  let gifIndicatorComposer = null;
+  let slashMenuComposer = null;
+  let slashMenuMatches = [];
+  let slashMenuIndex = 0;
   let gifCleanupTimer = null;
   let gifCleanupComposer = null;
   let gifCleanupUntil = 0;
@@ -720,29 +737,102 @@
   }
 
   function injectSlashCommandStyles() {
-    if (document.getElementById('wa-improver-gif-styles')) return;
+    if (document.getElementById('wa-improver-slash-styles')) return;
 
     const styles = document.createElement('style');
-    styles.id = 'wa-improver-gif-styles';
+    styles.id = 'wa-improver-slash-styles';
     styles.textContent = `
-      #${GIF_INDICATOR_ID} {
+      #${SLASH_MENU_ID} {
         position: fixed;
         z-index: 999999;
-        max-width: min(380px, calc(100vw - 24px));
-        background: rgba(16, 26, 22, 0.96);
-        color: #edf7f2;
-        border: 1px solid rgba(37, 211, 102, 0.45);
-        border-radius: 999px;
-        padding: 7px 12px;
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.15px;
-        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
-        pointer-events: none;
-        white-space: nowrap;
+        width: min(420px, calc(100vw - 24px));
+        background: rgba(17, 27, 23, 0.98);
+        backdrop-filter: blur(10px);
+        color: #e9f3ee;
+        border: 1px solid rgba(37, 211, 102, 0.28);
+        border-radius: 10px;
+        padding: 4px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 13px;
+        box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+        overflow: hidden;
       }
-      #${GIF_INDICATOR_ID}.ready {
-        border-color: rgba(37, 211, 102, 0.8);
+
+      #${SLASH_MENU_ID} .wa-slash-header {
+        padding: 5px 9px 6px;
+        font-size: 10.5px;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        color: #7f968b;
+      }
+
+      #${SLASH_MENU_ID} .wa-slash-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 9px;
+        border-radius: 7px;
+        cursor: pointer;
+      }
+
+      #${SLASH_MENU_ID} .wa-slash-item[aria-selected="true"] {
+        background: rgba(37, 211, 102, 0.16);
+      }
+
+      #${SLASH_MENU_ID} .wa-slash-icon {
+        flex: 0 0 30px;
+        height: 22px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 5px;
+        font-size: 10px;
+        font-weight: 700;
+        color: #9fe8bd;
+      }
+
+      #${SLASH_MENU_ID} .wa-slash-name {
+        font-weight: 600;
+        color: #f0f7f3;
+      }
+
+      #${SLASH_MENU_ID} .wa-slash-item[aria-selected="true"] .wa-slash-name {
+        color: #6ee7a0;
+      }
+
+      #${SLASH_MENU_ID} .wa-slash-desc {
+        color: #93a89e;
+        font-size: 12px;
+      }
+
+      #${SLASH_MENU_ID} .wa-slash-arg {
+        color: #7f968b;
+        font-size: 12px;
+        font-style: italic;
+      }
+
+      #${SLASH_MENU_ID} .wa-slash-footer {
+        display: flex;
+        gap: 10px;
+        padding: 6px 9px 4px;
+        margin-top: 2px;
+        border-top: 1px solid rgba(255, 255, 255, 0.07);
+        color: #7f968b;
+        font-size: 11px;
+      }
+
+      #${SLASH_MENU_ID} kbd {
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 4px;
+        padding: 0 4px;
+        font-family: inherit;
+        font-size: 10.5px;
+      }
+
+      #${SLASH_MENU_ID}.ready .wa-slash-item[aria-selected="true"] {
+        background: rgba(37, 211, 102, 0.24);
       }
     `;
     document.head.appendChild(styles);
@@ -771,7 +861,7 @@
 
     if (draft.command === 'gif') {
       if (!draft.query) {
-        showGifCommandIndicator(composer, draft);
+        updateSlashMenu(composer);
         return true;
       }
 
@@ -1108,7 +1198,7 @@
   }
 
   function openNativeGifPanelWithQuery(query, composer = null) {
-    hideGifCommandIndicator();
+    hideSlashMenu();
 
     if (composer) {
       clearComposerText(composer, { preserveFocus: true });
@@ -1154,7 +1244,7 @@
   }
 
   function openNativeStickerPanel(composer = null, query = '') {
-    hideGifCommandIndicator();
+    hideSlashMenu();
     stopGifComposerCleanup();
 
     if (composer) {
@@ -1176,53 +1266,66 @@
     setTimeout(focusStickerUi, 360);
   }
 
-  function getSlashCommandSuggestion(text) {
-    const normalized = (text || '').replace(/\u00A0/g, ' ').trim().toLowerCase();
+  // ---- Slash command parsing -------------------------------------------------
+
+  // Splits the composer text into "the command word" and "everything after it".
+  // Returns a match only while the text is still a single word, so a typed
+  // query never re-opens the command list.
+  function parseSlashInput(text) {
+    // Only the leading whitespace is stripped: a trailing space is meaningful,
+    // it marks the command word as finished.
+    const normalized = (text || '').replace(/ /g, ' ').replace(/^\s+/, '');
     if (!normalized.startsWith('/')) return null;
-    if (/\s/.test(normalized)) return null;
 
-    const matches = SLASH_COMMAND_DEFINITIONS.filter((definition) => definition.slash.startsWith(normalized));
-    if (matches.length === 0) return null;
+    const firstSpace = normalized.search(/\s/);
+    const word = firstSpace === -1 ? normalized : normalized.slice(0, firstSpace);
+    const rest = firstSpace === -1 ? '' : normalized.slice(firstSpace).trim();
 
-    const exact = matches.find((definition) => definition.slash === normalized);
     return {
-      isSuggestion: true,
-      typed: normalized,
-      match: exact || matches[0],
-      exact: Boolean(exact)
+      word,
+      lowerWord: word.toLowerCase(),
+      query: rest,
+      hasSpace: firstSpace !== -1
     };
+  }
+
+  function findSlashCommand(lowerWord) {
+    return SLASH_COMMAND_DEFINITIONS.find((definition) => definition.slash === lowerWord) || null;
+  }
+
+  function getSlashMatches(lowerWord) {
+    return SLASH_COMMAND_DEFINITIONS.filter((definition) => definition.slash.startsWith(lowerWord));
   }
 
   function getComposerText(composer) {
     return composerController?.getComposerText(composer) || '';
   }
 
+  // The trailing space is what separates "/gif" (still picking a command) from
+  // "/gif " (command picked, now typing its argument), and getComposerText
+  // trims it away. Contenteditable tends to append a newline, so drop only
+  // that.
+  function getComposerRawText(composer) {
+    if (!composer) return '';
+    return (composer.innerText || composer.textContent || '')
+      .replace(/ /g, ' ')
+      .replace(/[\r\n]+$/, '')
+      .replace(/^\s+/, '');
+  }
+
   function parseSlashCommandDraft(text) {
-    const normalized = (text || '').trim();
-    if (!normalized) return { isCommand: false, command: null, query: '' };
+    const parsed = parseSlashInput(text);
+    if (!parsed) return { isCommand: false, command: null, query: '' };
 
-    const lower = normalized.toLowerCase();
-    if (lower.startsWith('/gif')) {
-      const parts = normalized.split(/\s+/);
-      if (parts[0].toLowerCase() !== '/gif') return { isCommand: false, command: null, query: '' };
-      return {
-        isCommand: true,
-        command: 'gif',
-        query: normalized.slice(parts[0].length).trim()
-      };
-    }
+    const definition = findSlashCommand(parsed.lowerWord);
+    if (!definition) return { isCommand: false, command: null, query: '' };
 
-    if (lower.startsWith(STICKER_COMMAND_PREFIX)) {
-      const parts = normalized.split(/\s+/);
-      if (parts[0].toLowerCase() !== STICKER_COMMAND_PREFIX) return { isCommand: false, command: null, query: '' };
-      return {
-        isCommand: true,
-        command: 'sticker',
-        query: normalized.slice(parts[0].length).trim()
-      };
-    }
-
-    return { isCommand: false, command: null, query: '' };
+    return {
+      isCommand: true,
+      command: definition.command,
+      definition,
+      query: parsed.query
+    };
   }
 
   function parseGifDraft(text) {
@@ -1233,69 +1336,189 @@
     return { isCommand: true, query: draft.query };
   }
 
-  function applySlashCommandSuggestion(composer, suggestion) {
-    if (!composer || !suggestion?.match) return false;
-    setComposerText(composer, `${suggestion.match.slash} `);
-    const draft = parseSlashCommandDraft(getComposerText(composer));
-    if (draft.isCommand) {
-      showGifCommandIndicator(composer, draft);
-    }
+  // ---- Slash command menu ----------------------------------------------------
+
+  function isSlashMenuOpen() {
+    return Boolean(document.getElementById(SLASH_MENU_ID));
+  }
+
+  function hideSlashMenu() {
+    document.getElementById(SLASH_MENU_ID)?.remove();
+    slashMenuComposer = null;
+    slashMenuMatches = [];
+    slashMenuIndex = 0;
+  }
+
+  function positionSlashMenu(menu, composer) {
+    if (!menu || !composer) return;
+    const rect = composer.getBoundingClientRect();
+    const width = menu.offsetWidth || 420;
+    const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.left));
+    // Anchor the bottom of the menu just above the composer so it grows upward
+    // as commands are added, the way a command palette should.
+    const top = Math.max(12, rect.top - menu.offsetHeight - 10);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  function getOrCreateSlashMenu() {
+    let menu = document.getElementById(SLASH_MENU_ID);
+    if (menu) return menu;
+
+    injectSlashCommandStyles();
+    menu = document.createElement('div');
+    menu.id = SLASH_MENU_ID;
+    menu.setAttribute('role', 'listbox');
+    document.body.appendChild(menu);
+    return menu;
+  }
+
+  function selectSlashCommand(definition) {
+    const composer = slashMenuComposer || getActiveComposer();
+    if (!composer || !definition) return false;
+
+    setComposerText(composer, `${definition.slash} `);
+    composer.focus();
+    updateSlashMenu(composer);
     return true;
   }
 
-  function getOrCreateGifIndicator() {
-    let indicator = document.getElementById(GIF_INDICATOR_ID);
-    if (indicator) return indicator;
-
-    indicator = document.createElement('div');
-    indicator.id = GIF_INDICATOR_ID;
-    document.body.appendChild(indicator);
-    return indicator;
+  function moveSlashSelection(delta) {
+    if (slashMenuMatches.length === 0) return;
+    slashMenuIndex = (slashMenuIndex + delta + slashMenuMatches.length) % slashMenuMatches.length;
+    renderSlashMenu();
   }
 
-  function positionGifIndicator(indicator, composer) {
-    if (!indicator || !composer) return;
-    const rect = composer.getBoundingClientRect();
-    const top = Math.max(10, rect.top - 42);
-    const left = Math.max(12, Math.min(window.innerWidth - indicator.offsetWidth - 12, rect.left));
-    indicator.style.top = `${top}px`;
-    indicator.style.left = `${left}px`;
+  function getSelectedSlashCommand() {
+    return slashMenuMatches[slashMenuIndex] || null;
   }
 
-  function hideGifCommandIndicator() {
-    const indicator = document.getElementById(GIF_INDICATOR_ID);
-    if (indicator) indicator.remove();
-    gifIndicatorComposer = null;
-  }
+  function renderSlashMenu() {
+    const menu = getOrCreateSlashMenu();
+    const composer = slashMenuComposer;
+    if (!composer) return;
 
-  function showGifCommandIndicator(composer, draft) {
-    if (!composer || (!draft?.isCommand && !draft?.isSuggestion)) {
-      hideGifCommandIndicator();
+    const parsed = parseSlashInput(getComposerRawText(composer));
+    const exact = parsed ? findSlashCommand(parsed.lowerWord) : null;
+    const ready = Boolean(exact && parsed.hasSpace);
+
+    menu.classList.toggle('ready', ready);
+
+    if (ready) {
+      // Command is chosen; the menu becomes a hint for its argument.
+      const canRun = !exact.argRequired || parsed.query.length > 0;
+      menu.innerHTML = `
+        <div class="wa-slash-item" aria-selected="true">
+          <span class="wa-slash-icon"></span>
+          <span>
+            <span class="wa-slash-name"></span>
+            <span class="wa-slash-arg"></span>
+          </span>
+        </div>
+        <div class="wa-slash-footer"></div>
+      `;
+      menu.querySelector('.wa-slash-icon').textContent = exact.icon;
+      menu.querySelector('.wa-slash-name').textContent = exact.slash;
+      menu.querySelector('.wa-slash-arg').textContent = parsed.query
+        ? ` ${parsed.query}`
+        : ` ${exact.argHint}`;
+      menu.querySelector('.wa-slash-footer').innerHTML = canRun
+        ? '<span><kbd>Enter</kbd> run</span><span><kbd>Esc</kbd> cancel</span>'
+        : `<span>Type the ${exact.argHint}</span><span><kbd>Esc</kbd> cancel</span>`;
+
+      positionSlashMenu(menu, composer);
       return;
     }
 
-    injectSlashCommandStyles();
-    const indicator = getOrCreateGifIndicator();
-    gifIndicatorComposer = composer;
-    indicator.classList.remove('ready');
-
-    if (draft.isSuggestion) {
-      indicator.textContent = `${draft.match.slash} · ${draft.match.description} (Tab to complete)`;
-      if (draft.exact) {
-        indicator.classList.add('ready');
-      }
-    } else if (draft.command === 'sticker') {
-      indicator.textContent = draft.query
-        ? `/sticker ready: "${draft.query}" (Enter to open stickers)`
-        : '/sticker detected. Enter to open stickers.';
-    } else if (!draft.query) {
-      indicator.textContent = '/gif detected. Type what to search for.';
-    } else {
-      indicator.textContent = `/gif ready: "${draft.query}" (Enter to search)`;
-      indicator.classList.add('ready');
+    if (slashMenuMatches.length === 0) {
+      hideSlashMenu();
+      return;
     }
 
-    positionGifIndicator(indicator, composer);
+    menu.innerHTML = '<div class="wa-slash-header">Commands</div>';
+
+    slashMenuMatches.forEach((definition, index) => {
+      const item = document.createElement('div');
+      item.className = 'wa-slash-item';
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', String(index === slashMenuIndex));
+
+      const icon = document.createElement('span');
+      icon.className = 'wa-slash-icon';
+      icon.textContent = definition.icon;
+
+      const text = document.createElement('span');
+      const name = document.createElement('span');
+      name.className = 'wa-slash-name';
+      name.textContent = definition.slash;
+      const desc = document.createElement('span');
+      desc.className = 'wa-slash-desc';
+      desc.textContent = ` — ${definition.description}`;
+      text.appendChild(name);
+      text.appendChild(desc);
+
+      item.appendChild(icon);
+      item.appendChild(text);
+
+      item.addEventListener('mouseenter', () => {
+        slashMenuIndex = index;
+        renderSlashMenu();
+      });
+      item.addEventListener('mousedown', (event) => {
+        // mousedown, not click: clicking would blur the composer first.
+        event.preventDefault();
+        event.stopPropagation();
+        selectSlashCommand(definition);
+      });
+
+      menu.appendChild(item);
+    });
+
+    const footer = document.createElement('div');
+    footer.className = 'wa-slash-footer';
+    footer.innerHTML = '<span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Tab</kbd>/<kbd>Enter</kbd> pick</span><span><kbd>Esc</kbd> close</span>';
+    menu.appendChild(footer);
+
+    positionSlashMenu(menu, composer);
+  }
+
+  // Single entry point: reads the composer and puts the menu into the right
+  // state, or closes it when the text is no longer a command.
+  function updateSlashMenu(composer) {
+    if (!composer) {
+      hideSlashMenu();
+      return;
+    }
+
+    const parsed = parseSlashInput(getComposerRawText(composer));
+    if (!parsed) {
+      hideSlashMenu();
+      return;
+    }
+
+    const exact = findSlashCommand(parsed.lowerWord);
+
+    // A space after an unknown word means the user is writing prose, not a
+    // command ("/hello there"), so get out of the way.
+    if (parsed.hasSpace && !exact) {
+      hideSlashMenu();
+      return;
+    }
+
+    const matches = exact && parsed.hasSpace ? [exact] : getSlashMatches(parsed.lowerWord);
+    if (matches.length === 0) {
+      hideSlashMenu();
+      return;
+    }
+
+    const previous = getSelectedSlashCommand();
+    slashMenuComposer = composer;
+    slashMenuMatches = matches;
+    // Keep the highlight on the same command while the list narrows.
+    const preservedIndex = previous ? matches.indexOf(previous) : -1;
+    slashMenuIndex = preservedIndex >= 0 ? preservedIndex : 0;
+
+    renderSlashMenu();
   }
 
   function setComposerText(composer, text) {
@@ -1323,13 +1546,25 @@
     }
 
     gifCleanupComposer = composer;
-    gifCleanupUntil = Date.now() + 12000;
+    // Short window on purpose: long enough to outlast WhatsApp restoring the
+    // draft, short enough that a command the user types next is not ours to
+    // wipe.
+    gifCleanupUntil = Date.now() + 2500;
 
+    // Conditioned on what the composer holds, not on whether the GIF panel is
+    // open. The panel appears within ~200ms while WhatsApp restores the draft
+    // asynchronously after that, so bailing once the panel exists switched the
+    // safety net off exactly when it was needed.
     const runClear = () => {
-      if (findNativeGifSearchField()) {
+      if (!composer.isConnected) {
         stopGifComposerCleanup();
         return;
       }
+
+      // Only ever remove leftovers of the command itself. Anything else in the
+      // composer belongs to the user.
+      if (!parseSlashCommandDraft(getComposerText(composer)).isCommand) return;
+
       clearComposerText(composer, { preserveFocus: true });
       composer.dispatchEvent(new Event('change', { bubbles: true }));
     };
@@ -1339,7 +1574,7 @@
 
     // Keep it clear while WhatsApp may restore draft text asynchronously.
     const loop = () => {
-      if (!gifCleanupComposer || Date.now() >= gifCleanupUntil || findNativeGifSearchField()) {
+      if (!gifCleanupComposer || Date.now() >= gifCleanupUntil) {
         stopGifComposerCleanup();
         return;
       }
@@ -1934,7 +2169,7 @@
     if (messageNavigationMode) return false;
     if (event.ctrlKey || event.metaKey || event.shiftKey) return false;
     if (contextMenuOpen) return false;
-    if (document.getElementById(GIF_INDICATOR_ID)) return false;
+    if (isSlashMenuOpen()) return false;
 
     const target = event.target instanceof Element ? event.target : document.activeElement;
     if (!target) return false;
@@ -1961,26 +2196,48 @@
     const pressedKey = e.key;
     const pressedKeyLower = pressedKey.toLowerCase();
     const isTyping = isTypingTarget(e.target);
-    const composerTarget = getComposerFromTarget(e.target) || getComposerFromTarget(document.activeElement) || gifIndicatorComposer;
+    const composerTarget = getComposerFromTarget(e.target) || getComposerFromTarget(document.activeElement) || slashMenuComposer;
 
-    if ((composerTarget || gifIndicatorComposer) && pressedKey === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      const tabComposer = composerTarget || gifIndicatorComposer;
-      const indicatorVisible = Boolean(document.getElementById(GIF_INDICATOR_ID));
-      const suggestion = getSlashCommandSuggestion(getComposerText(tabComposer));
-      if (suggestion || indicatorVisible) {
+    // ===== SLASH COMMAND MENU =====
+    // Owns the arrows, Tab, Enter and Escape while it is open, so it behaves
+    // like a command palette rather than a passive hint.
+    if (isSlashMenuOpen() && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const swallowMenuKey = () => {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-      }
+      };
 
-      if (suggestion) {
-        applySlashCommandSuggestion(tabComposer, suggestion);
+      if (pressedKey === 'Escape') {
+        swallowMenuKey();
+        hideSlashMenu();
         return;
       }
 
-      if (indicatorVisible && tabComposer) {
-        tabComposer.focus();
+      if (pressedKey === 'ArrowDown') {
+        swallowMenuKey();
+        moveSlashSelection(1);
         return;
+      }
+
+      if (pressedKey === 'ArrowUp') {
+        swallowMenuKey();
+        moveSlashSelection(-1);
+        return;
+      }
+
+      // Tab always picks the highlighted command. Enter picks it too while the
+      // command word is still incomplete; once complete it runs the command.
+      const parsed = parseSlashInput(getComposerRawText(composerTarget));
+      const commandComplete = Boolean(parsed && findSlashCommand(parsed.lowerWord) && parsed.hasSpace);
+
+      if (pressedKey === 'Tab' || (pressedKey === 'Enter' && !e.shiftKey && !commandComplete)) {
+        const selected = getSelectedSlashCommand();
+        if (selected) {
+          swallowMenuKey();
+          selectSlashCommand(selected);
+          return;
+        }
       }
     }
 
@@ -2133,8 +2390,9 @@
 
   // Also exit navigation mode when clicking anywhere
   document.addEventListener('click', (event) => {
-    if (gifIndicatorComposer && !gifIndicatorComposer.contains(event.target)) {
-      hideGifCommandIndicator();
+    const clickedMenu = document.getElementById(SLASH_MENU_ID)?.contains(event.target);
+    if (slashMenuComposer && !slashMenuComposer.contains(event.target) && !clickedMenu) {
+      hideSlashMenu();
     }
 
     if (messageNavigationMode && !navigationActionInProgress) {
@@ -2143,9 +2401,9 @@
   }, true);
 
   window.addEventListener('resize', () => {
-    const indicator = document.getElementById(GIF_INDICATOR_ID);
-    if (indicator && gifIndicatorComposer) {
-      positionGifIndicator(indicator, gifIndicatorComposer);
+    const menu = document.getElementById(SLASH_MENU_ID);
+    if (menu && slashMenuComposer) {
+      positionSlashMenu(menu, slashMenuComposer);
     }
   });
 
@@ -2154,23 +2412,11 @@
 
     const composer = getComposerFromTarget(event.target);
     if (!composer) {
-      hideGifCommandIndicator();
+      hideSlashMenu();
       return;
     }
 
-    const currentText = getComposerText(composer);
-    const suggestion = getSlashCommandSuggestion(currentText);
-    if (suggestion) {
-      showGifCommandIndicator(composer, suggestion);
-      return;
-    }
-
-    const draft = parseSlashCommandDraft(currentText);
-    if (draft.isCommand) {
-      showGifCommandIndicator(composer, draft);
-    } else {
-      hideGifCommandIndicator();
-    }
+    updateSlashMenu(composer);
   }, true);
 
   // Start observing the document for context menu changes
