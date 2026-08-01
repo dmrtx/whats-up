@@ -103,32 +103,34 @@
       return composer.querySelector('p.copyable-text, p._aupe, p[class*="copyable-text"]') || composer.querySelector('p');
     }
 
-    function scrubGifCommandFromComposer(composer, force) {
-      if (!composer) return;
-      const rawText = (composer.innerText || composer.textContent || '').replace(/\u00A0/g, ' ').trim();
-      if (!force && !rawText.toLowerCase().startsWith('/gif')) return;
-
-      const paragraph = getComposerParagraph(composer);
-      if (paragraph) {
-        paragraph.textContent = '';
-        paragraph.innerHTML = '<br>';
-      }
-
-      if (!paragraph) {
-        composer.textContent = '';
-      }
-    }
-
+    // WhatsApp renders one <p> per line and can split a line across nodes, so
+    // clearing only the first paragraph leaves the rest of the text behind.
     function ensureComposerEmptyStructure(composer) {
       if (!composer) return;
-      const existingParagraph = getComposerParagraph(composer);
-      if (existingParagraph) {
-        existingParagraph.textContent = '';
-        existingParagraph.innerHTML = '<br>';
+
+      const paragraphs = Array.from(composer.querySelectorAll('p'));
+
+      if (paragraphs.length === 0) {
+        composer.textContent = '';
+        composer.innerHTML = '<br>';
         return;
       }
-      composer.textContent = '';
-      composer.innerHTML = '<br>';
+
+      // Keep the first paragraph as the empty line WhatsApp expects; drop the
+      // rest so no text survives in a later node.
+      paragraphs.forEach((paragraph, index) => {
+        if (index === 0) {
+          paragraph.textContent = '';
+          paragraph.innerHTML = '<br>';
+        } else {
+          paragraph.remove();
+        }
+      });
+
+      // Text can also sit directly under the composer, outside any paragraph.
+      Array.from(composer.childNodes).forEach((node) => {
+        if (node.nodeType === Node.TEXT_NODE) node.remove();
+      });
     }
 
     function getGifCommandComposerCandidates() {
@@ -154,9 +156,12 @@
 
       enterProgrammaticMutation();
       try {
-        if (!preserveFocus) {
-          composer.focus();
-        }
+        // execCommand acts on the focused editable, so the composer has to hold
+        // focus for the real delete to happen. preserveFocus means "hand focus
+        // back afterwards" (below), not "never take it" -- skipping the focus
+        // here left execCommand a no-op and only the DOM fallback running.
+        composer.focus();
+
         const selection = window.getSelection();
         if (selection) {
           const range = document.createRange();
@@ -180,8 +185,10 @@
           }));
         }
 
-        scrubGifCommandFromComposer(composer, true);
-        ensureComposerEmptyStructure(composer);
+        // Fallback for whatever execCommand did not remove.
+        if (getComposerText(composer) !== '') {
+          ensureComposerEmptyStructure(composer);
+        }
 
         if (emitEvents) {
           setInputSuppressed(true);
