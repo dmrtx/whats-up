@@ -27,9 +27,13 @@
   let messageNavigationMode = false;
   let selectedMessageIndex = -1;
   let selectedMessageElement = null;
+  let selectedMessageIdentity = null;
+  let navigationChatContext = null;
   let messageElements = [];
-  let navigationModeEnteredAt = 0; // Timestamp to prevent immediate actions
   let navigationActionInProgress = false;
+  let activeMessageAction = null;
+  let activeSlashOperation = null;
+  const extensionKeyboardEvents = new WeakSet();
   let optionsButtonObserver = null;
   let optionsButtonDebounceTimer = null;
   let memoryWidgetDebounceTimer = null;
@@ -71,9 +75,6 @@
   let slashMenuComposer = null;
   let slashMenuMatches = [];
   let slashMenuIndex = 0;
-  let gifCleanupTimer = null;
-  let gifCleanupComposer = null;
-  let gifCleanupUntil = 0;
   let suppressComposerInputHandler = false;
   let programmaticClearDepth = 0;
   let domAdapter = null;
@@ -850,212 +851,136 @@
     return composerController?.isSendButtonTarget(target) || false;
   }
 
+  function captureChatContext() {
+    const main = document.querySelector('#main');
+    const header = main?.querySelector('header');
+    const title = header?.querySelector('[data-testid="conversation-info-header-chat-title"], [title], [dir="auto"]');
+    return {
+      main,
+      composer: getActiveComposer(),
+      header,
+      title: title?.getAttribute('title') || title?.textContent || ''
+    };
+  }
+
+  function isChatContextCurrent(context) {
+    if (!context) return false;
+    const current = captureChatContext();
+    return context.main === current.main && context.composer === current.composer
+      && context.header === current.header && context.title === current.title;
+  }
+
+  function cancelSlashOperation() {
+    activeSlashOperation?.cancel();
+    activeSlashOperation = null;
+  }
+
+  function isConsumedSlashText(text, originalText, command) {
+    const normalized = text.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    // React may briefly restore just the command prefix, including a lone '/'.
+    return normalized.startsWith('/') && (originalText.startsWith(normalized)
+      || `/${command}`.startsWith(normalized));
+  }
+
   function handleSlashCommandInvocation(composer, event) {
     if (!composer) return false;
-    const draft = parseSlashCommandDraft(getComposerText(composer));
+    const originalText = getComposerText(composer);
+    const draft = parseSlashCommandDraft(originalText);
     if (!draft.isCommand) return false;
 
     event?.preventDefault();
     event?.stopPropagation();
     event?.stopImmediatePropagation?.();
 
-    if (draft.command === 'gif') {
-      if (!draft.query) {
-        updateSlashMenu(composer);
-        return true;
-      }
-
-      clearAnyVisibleGifCommandComposer(true);
-      clearComposerNowAndStabilize(composer);
-      setTimeout(() => openNativeGifPanelWithQuery(draft.query, composer), 80);
+    if (draft.command === 'gif' && !draft.query) {
+      updateSlashMenu(composer);
       return true;
     }
 
-    if (draft.command === 'sticker') {
-      if (composer) {
-        clearComposerText(composer, { preserveFocus: true });
+    cancelSlashOperation();
+    const context = captureChatContext();
+    const operation = window.WAImproverUiOperation.createUiOperation(() =>
+      activeSlashOperation === operation && composer.isConnected && isChatContextCurrent(context));
+    operation.composer = composer;
+    operation.originalText = originalText;
+    operation.command = draft.command;
+    activeSlashOperation = operation;
+    hideSlashMenu();
+
+    const clearRestoredCommand = () => {
+      if (!operation.isCurrent()) return;
+      const text = getComposerText(composer);
+      if (text && !isConsumedSlashText(text, originalText, draft.command)) {
+        cancelSlashOperation();
+        return;
       }
-      setTimeout(() => openNativeStickerPanel(composer, draft.query), 80);
-      return true;
-    }
-
-    return false;
-  }
-
-  function dispatchKeyboardShortcut(key, options = {}) {
-    const target = document.activeElement || document.body;
-    const eventInit = {
-      key,
-      code: `Key${key.toUpperCase()}`,
-      bubbles: true,
-      cancelable: true,
-      ...options
+      if (text) clearComposerText(composer, {
+        preserveFocus: true,
+        scheduleMutation: (callback) => operation.schedule(callback, 30),
+        shouldClear: () => operation.isCurrent()
+          && isConsumedSlashText(getComposerText(composer), originalText, draft.command)
+      });
     };
-
-    target.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-    target.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    clearRestoredCommand();
+    const cleanupUntil = Date.now() + 2500;
+    const cleanup = () => {
+      clearRestoredCommand();
+      if (Date.now() < cleanupUntil) operation.schedule(cleanup, 80);
+    };
+    operation.schedule(cleanup, 80);
+    operation.schedule(() => {
+      if (draft.command === 'gif') openNativeGifPanelWithQuery(draft.query, operation);
+      else openNativeStickerPanel(operation, draft.query);
+    }, 80);
+    operation.schedule(() => {
+      if (activeSlashOperation === operation) cancelSlashOperation();
+    }, 6000);
+    return true;
   }
 
   function clickVisibleElement(element) {
-    if (!element || !isElementVisible(element)) return false;
-    element.click();
-    return true;
+    return clickElementReliably(element);
+  }
+
+  function findPickerTab(kind) {
+    const explicitTab = document.querySelector(`[role="tab"][data-testid="expressions-btn-${kind}"]`);
+    if (explicitTab && isElementVisible(explicitTab)) return explicitTab;
+    const labelPattern = kind === 'gif' ? /^gifs?(?: selector)?$/i : /^(?:stickers?|pegatinas)(?: selector)?$/i;
+    const candidates = Array.from(document.querySelectorAll('[role="tab"], [role="button"], button'));
+    return candidates.find((node) => {
+      if (!isElementVisible(node)) return false;
+      const labels = [node.getAttribute('aria-label'), node.getAttribute('title'), node.textContent];
+      return labels.some((label) => labelPattern.test((label || '').trim()));
+    }) || null;
   }
 
   function findGifTabButton() {
-    const selectors = [
-      '[role="tab"][aria-label*="gif" i]',
-      '[aria-label*="gif" i]',
-      'button[title*="gif" i]',
-      '[data-testid*="gif"]'
-    ];
-
-    for (const selector of selectors) {
-      const nodes = Array.from(document.querySelectorAll(selector)).filter(isElementVisible);
-      const gifNode = nodes.find((node) => /gif/i.test(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title') || ''));
-      if (gifNode) {
-        return gifNode.closest('[role="button"], button, [role="tab"]') || gifNode;
-      }
-    }
-
-    return null;
+    return findPickerTab('gif');
   }
 
   function findStickerTabButton() {
-    const gifTab = findGifTabButton();
-    if (gifTab) {
-      const containers = [
-        gifTab.closest('[role="tablist"]'),
-        gifTab.parentElement,
-        gifTab.closest('footer')?.querySelector('[role="dialog"]')
+    return findPickerTab('sticker');
+  }
+
+  async function openPickerPanel(operation, findTab) {
+    if (!operation.isCurrent()) return false;
+    const footer = operation.composer.closest('footer');
+    if (!footer) return false;
+
+    let tab = findTab();
+    if (!tab) {
+      const emojiCandidates = [
+        footer.querySelector('[aria-label*="emoji" i]'),
+        footer.querySelector('[data-testid*="emoji"]'),
+        footer.querySelector('span[data-icon="smiley"]')?.closest('[role="button"], button')
       ].filter(Boolean);
-
-      for (const container of containers) {
-        const tabCandidates = Array.from(
-          container.querySelectorAll('[role="tab"], [role="button"], button')
-        ).filter(isElementVisible);
-        const gifIndex = tabCandidates.indexOf(gifTab);
-        if (gifIndex >= 0 && gifIndex < tabCandidates.length - 1) {
-          const nextCandidate = tabCandidates[gifIndex + 1];
-          if (nextCandidate && isElementVisible(nextCandidate)) {
-            return nextCandidate;
-          }
-        }
+      for (const candidate of emojiCandidates) {
+        if (clickVisibleElement(candidate.closest('[role="button"], button') || candidate)) break;
       }
+      tab = await operation.waitFor(findTab, 20, 100);
     }
-
-    const iconSelectors = [
-      'span[data-icon*="sticker"]',
-      '[data-testid*="sticker"] span[data-icon]',
-      'img[alt*="sticker" i]'
-    ];
-
-    for (const selector of iconSelectors) {
-      const nodes = Array.from(document.querySelectorAll(selector)).filter(isElementVisible);
-      for (const node of nodes) {
-        const clickable = node.closest('[role="button"], button, [role="tab"]') || node;
-        if (clickable && isElementVisible(clickable)) {
-          return clickable;
-        }
-      }
-    }
-
-    const selectors = [
-      '[role="tab"][aria-label*="sticker" i]',
-      '[aria-label*="sticker" i]',
-      'button[title*="sticker" i]',
-      '[data-testid*="sticker"]'
-    ];
-
-    for (const selector of selectors) {
-      const nodes = Array.from(document.querySelectorAll(selector)).filter(isElementVisible);
-      const stickerNode = nodes.find((node) => {
-        const label = node.textContent || node.getAttribute('aria-label') || node.getAttribute('title') || '';
-        return /sticker/i.test(label) && !/gif/i.test(label);
-      });
-      if (stickerNode) {
-        return stickerNode.closest('[role="button"], button, [role="tab"]') || stickerNode;
-      }
-    }
-
-    return null;
-  }
-
-  function waitForGifTabButton(maxAttempts = 12, delayMs = 100) {
-    return new Promise((resolve) => {
-      let attempts = maxAttempts;
-      const tick = () => {
-        const tab = findGifTabButton();
-        if (tab) {
-          resolve(tab);
-          return;
-        }
-        attempts -= 1;
-        if (attempts <= 0) {
-          resolve(null);
-          return;
-        }
-        setTimeout(tick, delayMs);
-      };
-      tick();
-    });
-  }
-
-  function openGifPanelByClickFallback() {
-    const footer = document.querySelector('footer');
-    if (!footer) return false;
-
-    const emojiCandidates = [
-      footer.querySelector('[aria-label*="emoji" i]'),
-      footer.querySelector('[data-testid*="emoji"]'),
-      footer.querySelector('span[data-icon="smiley"]')?.closest('[role="button"], button')
-    ].filter(Boolean);
-
-    for (const candidate of emojiCandidates) {
-      if (clickVisibleElement(candidate.closest('[role="button"], button') || candidate)) {
-        break;
-      }
-    }
-    
-    waitForGifTabButton(14, 90).then((tab) => {
-      if (!tab) return;
-      clickVisibleElement(tab);
-    });
-
-    return true;
-  }
-
-  function openStickerPanelByClickFallback() {
-    const footer = document.querySelector('footer');
-    if (!footer) return false;
-
-    const emojiCandidates = [
-      footer.querySelector('[aria-label*="emoji" i]'),
-      footer.querySelector('[data-testid*="emoji"]'),
-      footer.querySelector('span[data-icon="smiley"]')?.closest('[role="button"], button')
-    ].filter(Boolean);
-
-    for (const candidate of emojiCandidates) {
-      if (clickVisibleElement(candidate.closest('[role="button"], button') || candidate)) {
-        break;
-      }
-    }
-
-    const attempts = 14;
-    const delayMs = 90;
-    let remaining = attempts;
-    const tick = () => {
-      const tab = findStickerTabButton();
-      if (tab) {
-        clickVisibleElement(tab);
-        return;
-      }
-      remaining -= 1;
-      if (remaining <= 0) return;
-      setTimeout(tick, delayMs);
-    };
-    tick();
-
+    if (!tab || !operation.isCurrent()) return false;
+    if (tab.getAttribute('aria-selected') !== 'true') clickVisibleElement(tab);
     return true;
   }
 
@@ -1064,9 +989,9 @@
       'input[name*="GIPHY" i]',
       'input[aria-label*="GIPHY" i]',
       'input[placeholder*="GIPHY" i]',
-      '[role="dialog"] input[name*="GIPHY" i]',
-      '[role="dialog"] input[aria-label*="GIPHY" i]',
-      '[role="dialog"] input[placeholder*="GIPHY" i]'
+      'input[aria-label*="GIF" i]',
+      'input[placeholder*="GIF" i]',
+      '[data-testid*="gif-search"] input'
     ];
 
     for (const selector of strictSelectors) {
@@ -1144,49 +1069,16 @@
     return document.activeElement === field;
   }
 
-  function stopGifComposerCleanup() {
-    if (gifCleanupTimer) {
-      clearTimeout(gifCleanupTimer);
-      gifCleanupTimer = null;
-    }
-    gifCleanupComposer = null;
-    gifCleanupUntil = 0;
-  }
-
-  function waitForNativeGifSearchField(maxAttempts = 20, delayMs = 120) {
-    return new Promise((resolve) => {
-      let attempts = maxAttempts;
-      const tick = () => {
-        const field = findNativeGifSearchField();
-        if (field) {
-          resolve(field);
-          return;
-        }
-        attempts -= 1;
-        if (attempts <= 0) {
-          resolve(null);
-          return;
-        }
-        setTimeout(tick, delayMs);
-      };
-      tick();
-    });
-  }
-
-  function getSearchFieldText(field) {
-    if (!field) return '';
-    if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
-      return (field.value || '').trim();
-    }
-    return (field.innerText || field.textContent || '').trim();
-  }
 
   function findNativeStickerSearchField() {
     const selectors = [
-      '[role="dialog"] input[placeholder*="sticker" i]',
-      '[role="dialog"] input[aria-label*="sticker" i]',
-      '[role="dialog"] input[type="text"]',
-      '[role="dialog"] [contenteditable="true"][role="textbox"]'
+      'input[placeholder*="sticker" i]',
+      'input[aria-label*="sticker" i]',
+      'input[placeholder*="pegatina" i]',
+      'input[aria-label*="pegatina" i]',
+      '[data-testid*="sticker-search"] input',
+      '[contenteditable="true"][role="textbox"][aria-label*="sticker" i]',
+      '[contenteditable="true"][role="textbox"][aria-label*="pegatina" i]'
     ];
 
     for (const selector of selectors) {
@@ -1197,73 +1089,31 @@
     return null;
   }
 
-  function openNativeGifPanelWithQuery(query, composer = null) {
-    hideSlashMenu();
-
-    if (composer) {
-      clearComposerText(composer, { preserveFocus: true });
-    }
-    if (document.activeElement === composer) {
-      composer.blur?.();
-    }
-    
-    // Open GIF panel via UI flow first to avoid focusing global chat search.
-    openGifPanelByClickFallback();
-
-    waitForNativeGifSearchField(20, 140).then((field) => {
-      if (!field) {
-        // Try shortcuts only as fallback and still require strict GIPHY input.
-        dispatchKeyboardShortcut('g', { ctrlKey: true });
-        dispatchKeyboardShortcut('g', { metaKey: true });
-        return waitForNativeGifSearchField(10, 140);
-      }
-      return field;
-    }).then((field) => {
-      if (!field) {
-        console.info('WhatsApp Web Improver: Native GIF search field not found (strict GIPHY selector)');
-        return;
-      }
-
-      stopGifComposerCleanup();
+  async function openNativeGifPanelWithQuery(query, operation) {
+    try {
+      if (!await openPickerPanel(operation, findGifTabButton)) return;
+      const field = await operation.waitFor(findNativeGifSearchField, 25, 120);
+      if (!field || !operation.isCurrent()) return;
       setSearchFieldText(field, query);
       focusGifSearchField(field);
-      if (composer) {
-        clearComposerText(composer, { preserveFocus: true });
-      }
-      setTimeout(() => {
-        if (!getSearchFieldText(field)) {
-          setSearchFieldText(field, query);
-        }
-        stopGifComposerCleanup();
-        focusGifSearchField(field);
-        if (composer) {
-          clearComposerText(composer, { preserveFocus: true });
-        }
-      }, 180);
-    });
+      // No later unconditional clearing or refocusing: the user now owns the UI.
+    } catch (error) {
+      debugLog('WhatsApp Web Improver: GIF panel failed', error);
+      if (activeSlashOperation === operation) cancelSlashOperation();
+    }
   }
 
-  function openNativeStickerPanel(composer = null, query = '') {
-    hideSlashMenu();
-    stopGifComposerCleanup();
-
-    if (composer) {
-      clearComposerText(composer, { preserveFocus: true });
+  async function openNativeStickerPanel(operation, query = '') {
+    try {
+      if (!await openPickerPanel(operation, findStickerTabButton)) return;
+      const field = await operation.waitFor(findNativeStickerSearchField, 25, 120);
+      if (!field || !operation.isCurrent()) return;
+      if (query) setSearchFieldText(field, query);
+      focusGifSearchField(field);
+    } catch (error) {
+      debugLog('WhatsApp Web Improver: Sticker panel failed', error);
+      if (activeSlashOperation === operation) cancelSlashOperation();
     }
-
-    openStickerPanelByClickFallback();
-
-    const focusStickerUi = () => {
-      const searchField = findNativeStickerSearchField();
-      if (!searchField) return false;
-      if (query) {
-        setSearchFieldText(searchField, query);
-      }
-      return focusGifSearchField(searchField);
-    };
-
-    setTimeout(focusStickerUi, 180);
-    setTimeout(focusStickerUi, 360);
   }
 
   // ---- Slash command parsing -------------------------------------------------
@@ -1328,13 +1178,6 @@
     };
   }
 
-  function parseGifDraft(text) {
-    const draft = parseSlashCommandDraft(text);
-    if (!draft.isCommand || draft.command !== 'gif') {
-      return { isCommand: false, query: '' };
-    }
-    return { isCommand: true, query: draft.query };
-  }
 
   // ---- Slash command menu ----------------------------------------------------
 
@@ -1377,9 +1220,21 @@
     const composer = slashMenuComposer || getActiveComposer();
     if (!composer || !definition) return false;
 
-    setComposerText(composer, `${definition.slash} `);
-    composer.focus();
-    updateSlashMenu(composer);
+    cancelSlashOperation();
+    const context = captureChatContext();
+    const originalText = getComposerText(composer);
+    const operation = window.WAImproverUiOperation.createUiOperation(() =>
+      activeSlashOperation === operation && composer.isConnected && isChatContextCurrent(context));
+    Object.assign(operation, { composer, originalText, command: definition.command });
+    activeSlashOperation = operation;
+    composerController.setComposerText(composer, `${definition.slash} `, {
+      scheduleMutation: (callback) => operation.schedule(callback, 30),
+      shouldSet: () => operation.isCurrent() && getComposerText(composer) === originalText,
+      onComplete: () => operation.schedule(() => {
+        updateSlashMenu(composer);
+        if (activeSlashOperation === operation) cancelSlashOperation();
+      }, 0)
+    });
     return true;
   }
 
@@ -1521,71 +1376,8 @@
     renderSlashMenu();
   }
 
-  function setComposerText(composer, text) {
-    composerController?.setComposerText(composer, text);
-  }
-
-  function hasGifCommandText(composer) {
-    return composerController?.hasGifCommandText(composer) || false;
-  }
-
-  function clearAnyVisibleGifCommandComposer(onlyIfGif = true) {
-    composerController?.clearVisibleGifCommandComposers(onlyIfGif);
-  }
-
   function clearComposerText(composer, options = {}) {
     composerController?.clearComposerText(composer, options);
-  }
-
-  function clearComposerNowAndStabilize(composer) {
-    if (!composer) return;
-
-    if (gifCleanupTimer) {
-      clearTimeout(gifCleanupTimer);
-      gifCleanupTimer = null;
-    }
-
-    gifCleanupComposer = composer;
-    // Short window on purpose: long enough to outlast WhatsApp restoring the
-    // draft, short enough that a command the user types next is not ours to
-    // wipe.
-    gifCleanupUntil = Date.now() + 2500;
-
-    // Conditioned on what the composer holds, not on whether the GIF panel is
-    // open. The panel appears within ~200ms while WhatsApp restores the draft
-    // asynchronously after that, so bailing once the panel exists switched the
-    // safety net off exactly when it was needed.
-    const runClear = () => {
-      if (!composer.isConnected) {
-        stopGifComposerCleanup();
-        return;
-      }
-
-      // Only ever remove leftovers of the command itself. Anything else in the
-      // composer belongs to the user.
-      if (!parseSlashCommandDraft(getComposerText(composer)).isCommand) return;
-
-      clearComposerText(composer, { preserveFocus: true });
-      composer.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-
-    // Immediate clear before any GIF UI action.
-    runClear();
-
-    // Keep it clear while WhatsApp may restore draft text asynchronously.
-    const loop = () => {
-      if (!gifCleanupComposer || Date.now() >= gifCleanupUntil) {
-        stopGifComposerCleanup();
-        return;
-      }
-      runClear();
-      gifCleanupTimer = setTimeout(loop, 90);
-    };
-
-    [20, 40, 80, 140, 220, 320, 460, 620].forEach((delay) => {
-      setTimeout(runClear, delay);
-    });
-    gifCleanupTimer = setTimeout(loop, 120);
   }
 
   // Get all visible message elements, document order (oldest first).
@@ -1712,14 +1504,16 @@
 
   // A failed attempt can leave WhatsApp's context menu hanging open over the
   // chat; Escape is what WhatsApp itself listens for to dismiss it.
-  function closeStrayContextMenu() {
-    if (!findContextMenu()) return;
-    document.body.dispatchEvent(new KeyboardEvent('keydown', {
+  function closeStrayContextMenu(menu) {
+    if (!menu?.isConnected || menu !== findContextMenu()) return;
+    const event = new KeyboardEvent('keydown', {
       key: 'Escape',
       code: 'Escape',
       bubbles: true,
       cancelable: true
-    }));
+    });
+    extensionKeyboardEvents.add(event);
+    document.body.dispatchEvent(event);
     contextMenuOpen = false;
     currentContextMenu = null;
   }
@@ -1768,6 +1562,7 @@
 
     const msg = messageElements[index];
     selectedMessageElement = msg;
+    selectedMessageIdentity = getMessageIdentity(msg);
     msg.classList.add('wa-improver-selected-message');
 
     if (scroll) {
@@ -1782,27 +1577,23 @@
 
   // Re-read the list and locate the previously selected message in it. The
   // virtualised list swaps nodes as it scrolls, so the old index is unreliable.
+  function getMessageIdentity(row) {
+    if (!row) return null;
+    const id = row.getAttribute('data-id') || row.querySelector('[data-id]')?.getAttribute('data-id');
+    if (id) return id;
+    const body = row.querySelector('[data-pre-plain-text]');
+    return `${body?.getAttribute('data-pre-plain-text') || ''}:${row.textContent}`;
+  }
+
   function refreshMessageElements() {
-    const previous = selectedMessageElement;
+    if (!isChatContextCurrent(navigationChatContext)) return false;
     messageElements = getMessageElements();
-
-    if (messageElements.length === 0) {
-      selectedMessageIndex = -1;
-      return false;
-    }
-
-    if (previous && previous.isConnected) {
-      const foundIndex = messageElements.indexOf(previous);
-      if (foundIndex !== -1) {
-        selectedMessageIndex = foundIndex;
-        return true;
-      }
-    }
-
-    selectedMessageIndex = Math.min(
-      Math.max(selectedMessageIndex, 0),
-      messageElements.length - 1
-    );
+    // Never silently transfer a selection to whichever message now occupies
+    // the old index after a chat switch, removal or virtualised-list update.
+    const foundIndex = messageElements.findIndex((row) => getMessageIdentity(row) === selectedMessageIdentity);
+    if (foundIndex < 0) return false;
+    selectedMessageIndex = foundIndex;
+    selectedMessageElement = messageElements[foundIndex];
     return true;
   }
 
@@ -1842,9 +1633,11 @@
     }
 
     messageNavigationMode = true;
-    navigationModeEnteredAt = Date.now(); // Record entry time
+    cancelSlashOperation();
+    navigationChatContext = captureChatContext();
     selectedMessageIndex = messageElements.length - 1; // Start from last message
     selectedMessageElement = messageElements[selectedMessageIndex];
+    selectedMessageIdentity = getMessageIdentity(selectedMessageElement);
 
     // WhatsApp keeps focus in the composer and re-focuses the last message on
     // its own; blurring hands the arrows over to us cleanly.
@@ -1865,9 +1658,11 @@
     const { focusComposer = false } = options;
 
     messageNavigationMode = false;
-    navigationActionInProgress = false;
+    cancelMessageAction();
     selectedMessageIndex = -1;
     selectedMessageElement = null;
+    selectedMessageIdentity = null;
+    navigationChatContext = null;
     messageElements = [];
 
     clearMessageHighlight();
@@ -1882,118 +1677,69 @@
     debugLog('🎯 WhatsApp Web Improver: Navigation mode OFF');
   }
 
-  // Trigger action on selected message
+  function cancelMessageAction() {
+    const operation = activeMessageAction;
+    activeMessageAction = null;
+    navigationActionInProgress = false;
+    operation?.cancel();
+    if (operation?.menu) closeStrayContextMenu(operation.menu);
+  }
+
+  // Retry only while locating UI. Once a click is dispatched, never repeat it.
   function triggerActionOnSelectedMessage(action) {
-    debugLog(`🎯 triggerActionOnSelectedMessage called with action: "${action}"`);
-
-    if (navigationActionInProgress) {
-      debugLog('⏳ Navigation action already in progress, ignoring key press');
-      return false;
-    }
-
-    // The row may have been recycled by the virtualised list since selection.
+    if (navigationActionInProgress) return false;
     if (!refreshMessageElements()) {
       exitNavigationMode();
       return false;
     }
-
-    const msg = messageElements[selectedMessageIndex];
-    if (!msg) {
-      debugLog('❌ Invalid message index');
-      exitNavigationMode();
+    if (findContextMenu()) {
+      showNavigationError(action);
       return false;
     }
 
+    const msg = selectedMessageElement;
+    const identity = selectedMessageIdentity;
+    const context = navigationChatContext;
+    const operation = window.WAImproverUiOperation.createUiOperation(() =>
+      activeMessageAction === operation && messageNavigationMode
+      && isChatContextCurrent(context) && msg.isConnected
+      && getMessageIdentity(msg) === identity);
+    activeMessageAction = operation;
     navigationActionInProgress = true;
 
-    // Find the message bubble/container to right-click on
-    const targetElement = msg.querySelector('[data-pre-plain-text]') ||
-                msg.querySelector('[class*="copyable-text"]') ||
-                msg;
-
-    debugLog(`🎯 WhatsApp Web Improver: Triggering "${action}" on selected message`, targetElement);
-
-    const finishWithFailure = () => {
-      debugLog('❌ Failed to trigger action after retries');
-      navigationActionInProgress = false;
-
-      // Staying in navigation mode keeps the selection and the keyboard focus,
-      // so an action WhatsApp refuses (editing someone else's message, editing
-      // past the time limit) does not throw the user out of the flow.
-      closeStrayContextMenu();
-      showNavigationError(action);
-    };
-
-    const finishWithSuccess = () => {
-      navigationActionInProgress = false;
-      exitNavigationMode();
-    };
-
-    let remainingOpenAttempts = 3;
-
-    const tryOpenAndClick = () => {
-      contextMenuOpen = false;
-      currentContextMenu = null;
-      openContextMenuForMessageElement(targetElement);
-
-      waitForContextMenu((menu) => {
-        const activeMenu = menu || findContextMenu();
-
-        if (!activeMenu) {
-          remainingOpenAttempts -= 1;
-          if (remainingOpenAttempts <= 0) {
-            finishWithFailure();
-            return;
-          }
-
-          setTimeout(tryOpenAndClick, 160);
+    const run = async () => {
+      try {
+        if (!domAdapter.openContextMenuForMessageElement(msg)) return;
+        const menu = await operation.waitFor(findContextMenu, 15, 110);
+        if (!menu || !operation.isCurrent()) return;
+        operation.menu = menu;
+        const item = await operation.waitFor(() =>
+          menu.isConnected && isElementVisible(menu)
+            && messageActionResolver.findMenuActionCandidate(action, menu), 8, 120);
+        if (!item || !operation.isCurrent()) return;
+        if (!clickElementReliably(item)) return;
+        const closed = await operation.waitFor(() =>
+          !menu.isConnected || !isElementVisible(menu), 12, 100);
+        if (closed && operation.isCurrent()) {
+          exitNavigationMode({ focusComposer: action === 'reply' });
           return;
         }
-
-        let remainingClickAttempts = 8;
-
-        const retry = () => {
-          remainingClickAttempts -= 1;
-          if (remainingClickAttempts <= 0) {
-            finishWithFailure();
-            return;
-          }
-          setTimeout(() => attemptClick(findContextMenu()), 120);
-        };
-
-        const attemptClick = (menuCandidate = null) => {
-          const menuBeforeClick = menuCandidate || findContextMenu();
-
-          if (!clickMenuItemByAction(action, menuCandidate, false)) {
-            retry();
-            return;
-          }
-
-          // Dispatching the click is not proof it landed. WhatsApp closes the
-          // menu when an action actually runs, so that is the signal.
-          setTimeout(() => {
-            const menuStillOpen = menuBeforeClick
-              && menuBeforeClick.isConnected
-              && isElementVisible(menuBeforeClick);
-
-            if (menuStillOpen) {
-              retry();
-              return;
-            }
-
-            finishWithSuccess();
-          }, 180);
-        };
-
-        attemptClick(activeMenu);
-      }, 14, 110);
+      } catch (error) {
+        debugLog('WhatsApp Web Improver: Message action failed', error);
+      } finally {
+        if (activeMessageAction === operation) {
+          const stillCurrent = operation.isCurrent();
+          cancelMessageAction();
+          if (stillCurrent) showNavigationError(action);
+          else exitNavigationMode();
+        }
+      }
     };
-
-    tryOpenAndClick();
-    
+    run();
     return true;
   }
   
+
   function isElementVisible(el) {
     if (!el) return false;
     const style = window.getComputedStyle(el);
@@ -2016,23 +1762,7 @@
     return result.open;
   }
 
-  function waitForContextMenu(callback, attempts = 6, delayMs = 100) {
-    if (!domAdapter) {
-      callback(null);
-      return;
-    }
 
-    domAdapter.waitForContextMenu((menu) => {
-      currentContextMenu = menu;
-      contextMenuOpen = Boolean(menu);
-      callback(menu);
-    }, attempts, delayMs);
-  }
-
-  function openContextMenuForMessageElement(messageElement) {
-    domAdapter?.openContextMenuForMessageElement(messageElement);
-  }
-              
   // Detect when context menu opens
   const observer = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
@@ -2103,17 +1833,18 @@
 
     element.dispatchEvent(new MouseEvent('mousedown', base));
     element.dispatchEvent(new MouseEvent('mouseup', base));
-    element.dispatchEvent(new MouseEvent('click', base));
-    if (element.isConnected) element.click();
+    // Exactly one click. A second click can undo Star/Pin or activate a
+    // confirmation while React is still replacing the original menu.
+    if (!element.isConnected || !isElementVisible(element)) return false;
+    element.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0 }));
     return true;
   }
 
   // Find and click a menu item by action
-  function clickMenuItemByAction(action, menuOverride = null, allowGlobalFallback = true) {
+  function clickMenuItemByAction(action, menuOverride = null) {
     if (!messageActionResolver) return false;
 
     const result = messageActionResolver.clickMenuItemByAction(action, {
-      allowGlobalFallback,
       currentContextMenu,
       menuOverride
     });
@@ -2159,11 +1890,8 @@
     );
   }
 
-  // Two ways in, because neither alone covers every situation:
-  //  - Alt+ArrowUp works anywhere, including mid-draft, and never collides with
-  //    WhatsApp's own arrow handling.
-  //  - plain ArrowUp works from an empty composer (where WhatsApp parks the
-  //    focus by default) or from the message list when not typing.
+  // Plain ArrowUp selects messages even while a draft is being written.
+  // Alt+ArrowUp remains available elsewhere in the chat.
   function shouldEnterNavigationModeOnArrowUp(event) {
     if (!messageNavigationEnabled) return false;
     if (messageNavigationMode) return false;
@@ -2179,9 +1907,7 @@
 
     const composer = getComposerFromTarget(target);
     if (composer) {
-      // Only from an empty composer: otherwise we would hijack cursor movement
-      // in a draft the user is writing.
-      return getComposerText(composer) === '';
+      return true;
     }
 
     if (isTypingTarget(target)) return false;
@@ -2193,6 +1919,8 @@
   // this is the earliest point we can intercept a key before WhatsApp's own
   // handlers see it (notably its native ArrowUp "edit last message").
   window.addEventListener('keydown', (e) => {
+    if (extensionKeyboardEvents.has(e) || e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Escape') cancelSlashOperation();
     const pressedKey = e.key;
     const pressedKeyLower = pressedKey.toLowerCase();
     const isTyping = isTypingTarget(e.target);
@@ -2262,14 +1990,17 @@
     };
 
     // Handle navigation mode keys
+    if (messageNavigationMode && !isChatContextCurrent(navigationChatContext)) exitNavigationMode();
     if (messageNavigationMode) {
       if (navigationActionInProgress) {
         if (pressedKey === 'Escape') {
           swallow();
-          navigationActionInProgress = false;
-          exitNavigationMode();
-        } else if (pressedKey === 'ArrowUp' || pressedKey === 'ArrowDown') {
+          exitNavigationMode({ focusComposer: true });
+        } else if (pressedKey === 'ArrowUp' || pressedKey === 'ArrowDown'
+          || (!e.ctrlKey && !e.metaKey && !e.altKey && getActionForKey(pressedKeyLower))) {
           swallow();
+        } else if (pressedKey.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          exitNavigationMode({ focusComposer: true });
         }
         return;
       }
@@ -2295,10 +2026,7 @@
         return;
       }
 
-      // Check for action shortcuts (only after a short delay to prevent accidental triggers)
-      const timeSinceEntry = Date.now() - navigationModeEnteredAt;
-
-      if (timeSinceEntry > 300) { // 300ms delay before allowing actions
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         if (e.repeat) return;
 
         const action = getActionForKey(pressedKeyLower);
@@ -2308,8 +2036,6 @@
           triggerActionOnSelectedMessage(action);
           return;
         }
-      } else {
-        debugLog('⏳ Ignoring key - too soon after entering navigation mode');
       }
 
       // Any other key ends navigation so the user can just start typing.
@@ -2345,15 +2071,13 @@
     }
 
     const actionForKey = getActionForKey(pressedKeyLower);
-    if (!actionForKey) return;
+    if (!actionForKey || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
 
     const menuDetected = ensureContextMenuOpen();
 
     debugLog(`🎯 WhatsApp Web Improver: Matched shortcut "${pressedKeyLower}" → "${actionForKey}"`);
     
-    if (!menuDetected) {
-      debugLog('⚠️ WhatsApp Web Improver: Menu container not detected, trying visible action fallback');
-    }
+    if (!menuDetected) return;
 
     if (clickMenuItemByAction(actionForKey, menuDetected ? currentContextMenu : null)) {
       e.preventDefault();
@@ -2373,16 +2097,12 @@
     e.stopImmediatePropagation();
   }, true);
 
-  document.addEventListener('keyup', (e) => {
-    if (e.key !== 'Enter') return;
-    const composerTarget = getComposerFromTarget(e.target) || getComposerFromTarget(document.activeElement);
-    if (!composerTarget) return;
-    if (composerTarget !== gifCleanupComposer) return;
-    if (Date.now() > gifCleanupUntil + 1200) return;
-    clearComposerText(composerTarget);
-  }, true);
 
   document.addEventListener('mousedown', (e) => {
+    if (e.isTrusted && programmaticClearDepth === 0) {
+      cancelSlashOperation();
+      if (messageNavigationMode) exitNavigationMode();
+    }
     if (!isSendButtonTarget(e.target)) return;
     const composer = getActiveComposer();
     handleSlashCommandInvocation(composer, e);
@@ -2411,12 +2131,21 @@
     if (suppressComposerInputHandler || programmaticClearDepth > 0) return;
 
     const composer = getComposerFromTarget(event.target);
+    const operation = activeSlashOperation;
+    if (operation && composer === operation.composer) {
+      if (!event.isTrusted && isConsumedSlashText(getComposerText(composer), operation.originalText, operation.command)) return;
+      cancelSlashOperation();
+    }
     if (!composer) {
       hideSlashMenu();
       return;
     }
 
     updateSlashMenu(composer);
+  }, true);
+
+  document.addEventListener('beforeinput', (event) => {
+    if (event.isTrusted && programmaticClearDepth === 0) cancelSlashOperation();
   }, true);
 
   // Start observing the document for context menu changes

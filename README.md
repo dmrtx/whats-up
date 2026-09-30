@@ -31,7 +31,7 @@ The menu filters as you type (`/g` narrows to `/gif`), and gets out of the way i
 
 ### Message Navigation
 
-Press <kbd>↑</kbd> from an empty composer (or <kbd>Alt</kbd>+<kbd>↑</kbd> from anywhere, even mid-draft) to select the last message. Then:
+Press <kbd>↑</kbd> from the composer, even with an unsent draft (or <kbd>Alt</kbd>+<kbd>↑</kbd> from elsewhere), to select the last message. Your draft is preserved. Then:
 
 | Key | What it does |
 |-----|--------------|
@@ -39,7 +39,7 @@ Press <kbd>↑</kbd> from an empty composer (or <kbd>Alt</kbd>+<kbd>↑</kbd> fr
 | shortcut key | Run that action on the selected message |
 | `Esc` | Exit and return focus to the composer |
 
-Going past the newest message also exits. The extension swallows these keys before WhatsApp sees them, so its own arrow handling does not fight the selection.
+Going past the newest message also exits. Reply returns focus to the composer with your draft intact. Escape, user clicks and chat changes cancel pending actions. The extension swallows these keys before WhatsApp sees them, so its own arrow handling does not fight the selection.
 
 Can be turned off under **Message Navigation** in the popup.
 
@@ -71,7 +71,7 @@ Can be turned off under **Message Navigation** in the popup.
 ### Basic Usage
 
 1. Go to [WhatsApp Web](https://web.whatsapp.com)
-2. Press <kbd>↑</kbd> (empty composer) or <kbd>Alt</kbd>+<kbd>↑</kbd> to select a message
+2. Press <kbd>↑</kbd> from the composer, with or without a draft, or <kbd>Alt</kbd>+<kbd>↑</kbd> to select a message
 3. Press your configured shortcut key (e.g., `e` for edit)
 4. The action is triggered automatically!
 
@@ -86,7 +86,8 @@ Right-clicking a message to open its context menu and then pressing the shortcut
 
 ## How It Works
 
-- In navigation mode the extension opens the message's own context menu for you, then finds and clicks the matching item — retrying until the menu actually closes, which is how it knows the action landed
+- In navigation mode the extension opens the selected message's own context menu, waits for its action item and clicks it once. It waits for the menu to close without repeating the click or falling back to unrelated page controls.
+- Slash commands wait for the picker tabs and search field. Cleanup removes only remnants of the consumed command and stops as soon as you type, click, press Escape or switch chats.
 - It also monitors WhatsApp Web for context menus you open yourself, using a MutationObserver
 - Works with multiple languages (English, Spanish, French, German, Italian)
 - Settings are synced across your Chrome browsers using Chrome Sync
@@ -117,7 +118,7 @@ window.__WA_IMPROVER_DEBUG = true
 
 ## Icon Files
 
-The project includes `icon16.png` for UI use. You can add more sizes and wire them in `manifest.json` if you want branded extension icons in Chrome.
+The project includes transparent icons at 16, 32, 48 and 128 pixels, wired in `manifest.json`. The full-size source is `assets/icon-source.png`; the design prompt is recorded in `docs/icon-design.md`.
 
 ## Browser Support
 
@@ -175,12 +176,17 @@ To add a new action:
 3. Add the UI elements in `popup.html`
 4. Update the README
 
+### Local regression tests
+
+Run `npm ci` and `npm test`. Tests load the manifest's content scripts into a simulated WhatsApp DOM, with controlled timers and mocked Chrome storage. They do not connect to WhatsApp or send messages. They cover draft preservation, one-click actions, cancelled and stale operations, slow pickers and slash-command cleanup.
+
 ## Privacy
 
 This extension:
-- ✅ Does NOT collect any data
-- ✅ Does NOT send any information to external servers
-- ✅ Only stores your keyboard shortcut preferences locally
+- ✅ Does not upload or persist your chats, contacts or messages
+- ✅ Syncs shortcut, navigation and performance preferences through Chrome Sync
+- ✅ Keeps display preferences and performance status in local browser storage
+- ✅ Uses WhatsApp's native picker for GIF and sticker searches
 - ✅ Only runs on web.whatsapp.com
 - ✅ Open source - you can review all the code
 

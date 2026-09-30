@@ -81,8 +81,9 @@
     }
 
     function getActiveContextMenu(menuOverride, currentContextMenu) {
-      if (menuOverride && menuOverride.isConnected && isElementVisible(menuOverride) && isContextMenu(menuOverride)) {
-        return menuOverride;
+      if (menuOverride) {
+        return menuOverride.isConnected && isElementVisible(menuOverride) && isContextMenu(menuOverride)
+          ? menuOverride : null;
       }
 
       if (currentContextMenu && currentContextMenu.isConnected && isElementVisible(currentContextMenu) && isContextMenu(currentContextMenu)) {
@@ -93,7 +94,7 @@
     }
 
     function ensureContextMenuOpen(currentContextMenu) {
-      if (currentContextMenu && isElementVisible(currentContextMenu)) {
+      if (currentContextMenu && currentContextMenu.isConnected && isContextMenu(currentContextMenu)) {
         return { open: true, menu: currentContextMenu };
       }
 
@@ -103,21 +104,6 @@
       }
 
       return { open: false, menu: null };
-    }
-
-    function waitForContextMenu(callback, attempts, delayMs) {
-      const menu = findContextMenu();
-      if (menu) {
-        callback(menu);
-        return;
-      }
-
-      if (attempts <= 0) {
-        callback(null);
-        return;
-      }
-
-      setTimeout(() => waitForContextMenu(callback, attempts - 1, delayMs), delayMs);
     }
 
     function dispatchRightClickSequence(targetElement, x, y) {
@@ -193,7 +179,7 @@
     }
 
     function openContextMenuForMessageElement(messageElement) {
-      if (!messageElement) return;
+      if (!messageElement?.isConnected || !isElementVisible(messageElement)) return false;
 
       const actionTarget = resolveMessageActionTarget(messageElement) || messageElement;
       const row = actionTarget.closest('[data-id], [role="row"], [data-testid="msg-container"]') || actionTarget;
@@ -224,8 +210,7 @@
 
       for (const clickable of menuButtonCandidates) {
         try {
-          clickElementReliably(clickable);
-          return;
+          if (clickElementReliably(clickable)) return true;
         } catch (error) {
           // try next candidate
         }
@@ -233,7 +218,7 @@
 
       actionTarget.scrollIntoView({ behavior: 'auto', block: 'center' });
       const rect = actionTarget.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
+      if (!messageElement.isConnected || !rect.width || !rect.height) return false;
 
       const probePoints = [
         [Math.round(rect.left + rect.width * 0.8), Math.round(rect.top + rect.height * 0.25)],
@@ -244,40 +229,23 @@
 
       for (const [x, y] of probePoints) {
         const topMost = document.elementFromPoint(x, y) || actionTarget;
+        // A newly opened menu can cover the remaining probe points. Never
+        // right-click that overlay (or another message) as part of this action.
+        if (!actionTarget.contains(topMost) && !row.contains(topMost)) continue;
         dispatchRightClickSequence(topMost, x, y);
+        return true;
       }
-    }
-
-    function getMenuContainerForItem(item) {
-      if (!item) return null;
-
-      let current = item;
-      let depth = 0;
-      while (current && depth < 8) {
-        if (isElementVisible(current) && isMenuSizeReasonable(current)) {
-          const visibleItems = Array.from(getMenuItemsForNode(current)).filter(isElementVisible);
-          if (visibleItems.length >= 2 && visibleItems.length <= 20) {
-            return current;
-          }
-        }
-
-        current = current.parentElement;
-        depth += 1;
-      }
-
-      return null;
+      return false;
     }
 
     return {
       ensureContextMenuOpen,
       findContextMenu,
       getActiveContextMenu,
-      getMenuContainerForItem,
       getMenuItemsForNode,
       hasMenuContainerRole,
       isContextMenu,
-      openContextMenuForMessageElement,
-      waitForContextMenu
+      openContextMenuForMessageElement
     };
   }
 

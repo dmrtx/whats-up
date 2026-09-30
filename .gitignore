@@ -1,0 +1,22 @@
+node_modules/
+
+# Local files and private runtime data
+.DS_Store
+._*
+.env
+.env.*
+!.env.example
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+.wwebjs_auth/
+.wwebjs_cache/
+*session.json
+auth_info*.json
+screenshots/
+*.har
+test-results/
+playwright-report/
+coverage/

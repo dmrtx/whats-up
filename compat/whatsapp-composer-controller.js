@@ -11,7 +11,8 @@
 
     function getComposerFromTarget(target) {
       if (!(target instanceof Element)) return null;
-      return target.closest('[contenteditable="true"][role="textbox"], [contenteditable="true"][data-tab="10"], footer [contenteditable="true"]');
+      const composer = target.closest('footer [contenteditable="true"], #main [contenteditable="true"][data-tab="10"]');
+      return composer && !composer.closest('[role="dialog"]') ? composer : null;
     }
 
     function getActiveComposer() {
@@ -19,10 +20,10 @@
       if (focused) return focused;
 
       const candidates = Array.from(
-        document.querySelectorAll('footer [contenteditable="true"], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-tab="10"]')
+        document.querySelectorAll('#main footer [contenteditable="true"], footer [contenteditable="true"], #main [contenteditable="true"][data-tab="10"]')
       );
       for (const candidate of candidates) {
-        if (isElementVisible(candidate)) return candidate;
+        if (!candidate.closest('[role="dialog"]') && isElementVisible(candidate)) return candidate;
       }
       return null;
     }
@@ -45,57 +46,64 @@
       return raw.trim();
     }
 
-    function setComposerText(composer, text) {
-      if (!composer) return;
+    function selectComposerContents(composer) {
       composer.focus();
       const selection = window.getSelection();
       if (!selection) return;
-
-      composer.dispatchEvent(new InputEvent('beforeinput', {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        inputType: 'insertText',
-        data: text
-      }));
-
       const range = document.createRange();
       range.selectNodeContents(composer);
       selection.removeAllRanges();
       selection.addRange(range);
-
-      let insertedWithExecCommand = false;
       try {
-        insertedWithExecCommand = document.execCommand('insertText', false, text);
+        document.execCommand('selectAll');
       } catch (error) {
-        insertedWithExecCommand = false;
+        // The Range still selects the complete composer.
       }
+    }
 
-      if (!insertedWithExecCommand || getComposerText(composer) !== text) {
-        range.deleteContents();
-
-        const paragraph = getComposerParagraph(composer);
-        if (paragraph) {
-          paragraph.textContent = text;
-          const textNode = paragraph.firstChild || document.createTextNode(text);
-          if (!paragraph.firstChild) {
-            paragraph.appendChild(textNode);
+    function setComposerText(composer, text, options = {}) {
+      const { scheduleMutation = (callback) => callback(), shouldSet = () => true,
+        onComplete = () => {} } = options;
+      if (!composer?.isConnected || !shouldSet()) return;
+      selectComposerContents(composer);
+      scheduleMutation(() => {
+        if (!composer.isConnected || !shouldSet() || document.activeElement !== composer) return;
+        enterProgrammaticMutation();
+        try {
+          const beforeInput = new InputEvent('beforeinput', {
+            bubbles: true, cancelable: true, composed: true, inputType: 'insertText', data: text
+          });
+          composer.dispatchEvent(beforeInput);
+          const managedEditor = composer.hasAttribute('data-lexical-editor');
+          if (!beforeInput.defaultPrevented) {
+            try {
+              document.execCommand('insertText', false, text);
+            } catch (error) {
+              // Continue with the DOM fallback for unmanaged composers.
+            }
+            if (!managedEditor && getComposerText(composer) !== text.trim()) {
+              const paragraph = getComposerParagraph(composer);
+              const target = paragraph || composer;
+              target.textContent = text;
+              if (paragraph) composer.replaceChildren(paragraph);
+              const range = document.createRange();
+              range.selectNodeContents(target);
+              range.collapse(false);
+              window.getSelection()?.removeAllRanges();
+              window.getSelection()?.addRange(range);
+            }
+            // Native insertion already emits input. A second insertText event
+            // makes Lexical apply the same text again at the new caret.
+            if (!managedEditor) {
+              composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+              composer.dispatchEvent(new Event('change', { bubbles: true }));
+            }
           }
-          range.selectNodeContents(paragraph);
-          range.collapse(false);
-        } else {
-          const textNode = document.createTextNode(text);
-          range.insertNode(textNode);
-          range.setStartAfter(textNode);
-          range.collapse(true);
+          onComplete();
+        } finally {
+          exitProgrammaticMutation();
         }
-
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
-
-      composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-      composer.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      });
     }
 
     function getComposerParagraph(composer) {
@@ -108,127 +116,76 @@
     function ensureComposerEmptyStructure(composer) {
       if (!composer) return;
 
-      const paragraphs = Array.from(composer.querySelectorAll('p'));
-
-      if (paragraphs.length === 0) {
-        composer.textContent = '';
-        composer.innerHTML = '<br>';
-        return;
+      const paragraph = getComposerParagraph(composer);
+      const emptyLine = document.createElement('br');
+      if (paragraph) {
+        paragraph.replaceChildren(emptyLine);
+        composer.replaceChildren(paragraph);
+      } else {
+        composer.replaceChildren(emptyLine);
       }
-
-      // Keep the first paragraph as the empty line WhatsApp expects; drop the
-      // rest so no text survives in a later node.
-      paragraphs.forEach((paragraph, index) => {
-        if (index === 0) {
-          paragraph.textContent = '';
-          paragraph.innerHTML = '<br>';
-        } else {
-          paragraph.remove();
-        }
-      });
-
-      // Text can also sit directly under the composer, outside any paragraph.
-      Array.from(composer.childNodes).forEach((node) => {
-        if (node.nodeType === Node.TEXT_NODE) node.remove();
-      });
     }
 
-    function getGifCommandComposerCandidates() {
-      const preferred = Array.from(
-        document.querySelectorAll('footer [contenteditable="true"], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-tab="10"]')
-      );
-      return preferred.filter((node, index) => preferred.indexOf(node) === index);
-    }
-
-    function hasGifCommandText(composer) {
-      const text = getComposerText(composer)
-        .replace(/[\u200B-\u200D\uFEFF]/g, '')
-        .replace(/\u00A0/g, ' ')
-        .toLowerCase()
-        .trim();
-      return /^\/(?:g(?:i(?:f)?)?)?(?:\s.*)?$/i.test(text);
-    }
-
-    function clearComposerText(composer, options) {
-      if (!composer) return;
-      const { emitEvents = true, preserveFocus = false } = options || {};
+    function clearComposerText(composer, options = {}) {
+      if (!composer?.isConnected) return;
+      const { emitEvents = true, preserveFocus = false,
+        scheduleMutation = (callback) => callback(), shouldClear = () => true } = options;
       const previousActiveElement = document.activeElement;
+      if (!shouldClear()) return;
 
       enterProgrammaticMutation();
       try {
-        // execCommand acts on the focused editable, so the composer has to hold
-        // focus for the real delete to happen. preserveFocus means "hand focus
-        // back afterwards" (below), not "never take it" -- skipping the focus
-        // here left execCommand a no-op and only the DOM fallback running.
-        composer.focus();
-
-        const selection = window.getSelection();
-        if (selection) {
-          const range = document.createRange();
-          range.selectNodeContents(composer);
-          selection.removeAllRanges();
-          selection.addRange(range);
-          try {
-            document.execCommand('delete');
-          } catch (error) {
-            // Ignore and continue with DOM-based clearing fallback.
-          }
-        }
-
-        if (emitEvents) {
-          composer.dispatchEvent(new InputEvent('beforeinput', {
-            bubbles: true,
-            cancelable: true,
-            composed: true,
-            inputType: 'deleteContentBackward',
-            data: null
-          }));
-        }
-
-        // Fallback for whatever execCommand did not remove.
-        if (getComposerText(composer) !== '') {
-          ensureComposerEmptyStructure(composer);
-        }
-
-        if (emitEvents) {
-          setInputSuppressed(true);
-          composer.dispatchEvent(new InputEvent('input', {
-            bubbles: true,
-            cancelable: true,
-            composed: true,
-            inputType: 'deleteContentBackward',
-            data: null
-          }));
-          composer.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-          setTimeout(() => {
-            setInputSuppressed(false);
-          }, 0);
-        }
-
-        if (preserveFocus && previousActiveElement instanceof HTMLElement && previousActiveElement !== composer) {
-          previousActiveElement.focus();
-        }
+        selectComposerContents(composer);
       } finally {
         exitProgrammaticMutation();
       }
-    }
 
-    function clearVisibleGifCommandComposers(onlyIfGif) {
-      const composers = getGifCommandComposerCandidates();
-      for (const candidate of composers) {
-        if (!isElementVisible(candidate)) continue;
-        if (onlyIfGif && !hasGifCommandText(candidate)) continue;
-        clearComposerText(candidate, { emitEvents: true, preserveFocus: true });
-      }
+      // Let WhatsApp process selectionchange before deleting. Its Lexical
+      // model otherwise still holds the old caret, then restores the draft.
+      // The caller owns this delayed mutation and cancels it on user input.
+      scheduleMutation(() => {
+        if (!composer.isConnected || !shouldClear() || document.activeElement !== composer) return;
+        enterProgrammaticMutation();
+        try {
+          const beforeInput = new InputEvent('beforeinput', {
+            bubbles: true, cancelable: true, composed: true,
+            inputType: 'deleteContentBackward', data: null
+          });
+          composer.dispatchEvent(beforeInput);
+          // Managed editors consume beforeinput to update their model. Do not
+          // delete again after that: it can remove a character from a new caret.
+          const handledByEditor = beforeInput.defaultPrevented;
+          if (!handledByEditor) {
+            try {
+              document.execCommand('delete');
+            } catch (error) {
+              // Continue with the DOM fallback for unmanaged composers.
+            }
+            if (getComposerText(composer) !== '') ensureComposerEmptyStructure(composer);
+          }
+          if (emitEvents && !handledByEditor) {
+            setInputSuppressed(true);
+            composer.dispatchEvent(new InputEvent('input', {
+              bubbles: true, composed: true, inputType: 'deleteContentBackward', data: null
+            }));
+            composer.dispatchEvent(new Event('change', { bubbles: true }));
+            setTimeout(() => setInputSuppressed(false), 0);
+          }
+          if (preserveFocus && previousActiveElement instanceof HTMLElement
+            && previousActiveElement.isConnected && previousActiveElement !== composer) {
+            previousActiveElement.focus();
+          }
+        } finally {
+          exitProgrammaticMutation();
+        }
+      });
     }
 
     return {
       clearComposerText,
-      clearVisibleGifCommandComposers,
       getActiveComposer,
       getComposerFromTarget,
       getComposerText,
-      hasGifCommandText,
       isSendButtonTarget,
       setComposerText
     };

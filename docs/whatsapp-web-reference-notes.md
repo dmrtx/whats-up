@@ -1,6 +1,6 @@
 # WhatsApp Web Reference Notes
 
-Referencia analizada: [`/.whatsapp-web`](../.whatsapp-web)
+Referencia analizada: [`.whatsapp-web`](../.whatsapp-web)
 
 ## Que es esta referencia
 
