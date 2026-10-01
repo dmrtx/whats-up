@@ -13,11 +13,14 @@
 .wa-improver-sidebar-resizer::after {
   content: "";
   position: absolute;
-  inset-block: 0;
+  inset-block-start: 50%;
   inset-inline-end: 0;
   width: 2px;
+  height: 24px;
+  transform: translateY(-50%);
+  border-radius: 2px;
   background: transparent;
 }
-.wa-improver-sidebar-resizer:is(:hover, :focus-visible, [data-dragging])::after {
-  background: var(--wds-accent, #00a884);
+.wa-improver-sidebar-resizer:is(:focus-visible, [data-dragging])::after {
+  background: var(--secondary-lighter, #8696a0);
 }

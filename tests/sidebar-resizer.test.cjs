@@ -55,11 +55,17 @@ function setup(t, stored = null) {
 test('chat-list divider keeps original layout until resized and persists a completed drag', t => {
   const h = setup(t);
   assert.equal(h.column().style.flex, '0 0 30%');
+  const search = h.document.createElement('input');
+  h.document.querySelector('#side').prepend(search);
+  search.focus();
   h.pointer('pointerdown', 454);
+  assert.equal(h.document.activeElement, h.handle());
   h.pointer('pointermove', 534);
   assert.equal(h.column().style.width, '470px');
   assert.equal(h.stored(), null);
   h.pointer('pointerup', 534);
+  assert.equal(h.document.activeElement, search);
+  assert.equal(h.handle().hasAttribute('data-dragging'), false);
   assert.equal(h.stored(), '470');
   assert.equal(h.handle().getAttribute('aria-valuenow'), '470');
 });

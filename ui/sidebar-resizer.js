@@ -88,6 +88,12 @@
     if (cancel) preferredWidth = previous.preferredWidth;
     else persist();
     update();
+    // Pointer resizing borrows focus for Escape; return it when the drag ends.
+    // A splitter focused deliberately with the keyboard keeps its focus.
+    if (document.activeElement === previous.handle && previous.focusedBefore !== previous.handle) {
+      previous.handle.blur();
+      if (previous.focusedBefore?.isConnected) previous.focusedBefore.focus({ preventScroll: true });
+    }
   }
 
   function findPanel() {
@@ -134,7 +140,7 @@
         const limits = bounds();
         drag = { handle, pointerId: event.pointerId, x: event.clientX,
           width: next.panel.getBoundingClientRect().width / limits.scale,
-          scale: limits.scale, preferredWidth,
+          scale: limits.scale, preferredWidth, focusedBefore: document.activeElement,
           direction: getComputedStyle(next.container).direction === 'rtl' ? -1 : 1 };
         handle.setPointerCapture(event.pointerId);
         handle.setAttribute('data-dragging', '');
