@@ -10,7 +10,7 @@ A Chrome extension that adds configurable keyboard shortcuts to WhatsApp Web, si
 - **📌 Popup Dashboard**: Manage shortcuts and performance from the extension popup (auto-saves changes)
 - **🌍 Multi-language Support**: Works with WhatsApp in different languages
 - **🚀 Lightweight**: Fast and efficient, no performance impact
-- **Native Typography**: Uses the system UI font (San Francisco on macOS), with 14px chat names and 13px messages, composer, previews and search. Text changes independently of avatar and icon sizes. Your existing UI zoom preference still applies.
+- **Native Typography**: Uses the system UI font (San Francisco on macOS) and macOS's default text smoothing, with 14px chat names and 13px messages, composer, previews and search. Text changes independently of avatar and icon sizes. Your existing UI zoom preference still applies.
 
 ### Slash Commands
 

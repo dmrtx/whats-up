@@ -8,6 +8,9 @@
 
 #app :where(div, span, p, a, label, h1, h2, h3, button, input, textarea):not(:where(pre, pre *, code, code *, kbd, kbd *)) {
   font-family: var(--wa-improver-ui-font) !important;
+  /* WhatsApp forces grayscale antialiasing on individual text elements.
+     Let macOS choose its default rendering, especially on 1x displays. */
+  -webkit-font-smoothing: auto !important;
 }
 
 /* Chat names and the conversation header. */
