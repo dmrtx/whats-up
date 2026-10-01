@@ -7,6 +7,10 @@ const source = fs.readFileSync(path.join(__dirname, '../ui/sidebar-resizer.js'),
 
 function setup(t, stored = null) {
   const dom = new JSDOM(`<div id="app"><div id="layout" style="display:flex;flex-direction:row">
+    <div id="frame" style="display:flex;flex-direction:row;position:absolute;pointer-events:none">
+      <div id="frame-side" style="flex:0 0 30%;border-left:1px solid grey"><div></div></div>
+      <div style="flex:1 1 auto;border-left:1px solid grey"><div></div></div>
+    </div>
     <header></header><div id="column" style="flex:0 0 30%;position:relative">
     <header></header><div id="side" style="display:flex;flex-direction:column"><div id="pane-side"></div></div>
     </div><main id="main"></main></div></div>`, { url: 'https://web.whatsapp.com', runScripts: 'outside-only' });
@@ -129,4 +133,25 @@ test('invalid stored width is ignored and RTL arrows follow the visual direction
   h.document.querySelector('#layout').style.direction = 'rtl';
   h.key('ArrowLeft');
   assert.equal(h.column().style.width, '406px');
+});
+
+test('native decorative divider follows sidebar width, responsive clamps and reset', async t => {
+  const h = setup(t, '560');
+  const frameSide = h.document.querySelector('#frame-side');
+  assert.equal(frameSide.style.width, h.column().style.width);
+  h.pointer('pointerdown', 624);
+  h.pointer('pointermove', 400);
+  h.pointer('pointerup', 400);
+  assert.equal(frameSide.style.width, '336px');
+  await h.resize(700);
+  assert.equal(frameSide.style.width, '276px');
+  assert.equal(frameSide.style.width, h.column().style.width);
+  await h.resize(600);
+  assert.equal(frameSide.style.flex, '0 0 30%');
+  assert.equal(frameSide.style.width, '');
+  await h.resize(1200);
+  assert.equal(frameSide.style.width, '336px');
+  h.handle().dispatchEvent(new h.window.MouseEvent('dblclick', { bubbles: true }));
+  assert.equal(frameSide.style.flex, '0 0 30%');
+  assert.equal(frameSide.style.width, '');
 });

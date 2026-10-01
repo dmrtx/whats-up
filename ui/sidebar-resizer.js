@@ -30,9 +30,41 @@
 
   function restore() {
     if (!binding) return;
-    for (const [property, value, priority] of binding.original) {
-      if (value) binding.panel.style.setProperty(property, value, priority);
-      else binding.panel.style.removeProperty(property);
+    restoreStyles(binding.panel, binding.original);
+    for (const [column, original] of binding.decorations) restoreStyles(column, original);
+  }
+
+  function restoreStyles(element, original) {
+    for (const [property, value, priority] of original) {
+      if (value) element.style.setProperty(property, value, priority);
+      else element.style.removeProperty(property);
+    }
+  }
+
+  function syncDecorations() {
+    // WhatsApp draws its column borders in a separate, non-interactive layer.
+    // Its first column must follow the resized sidebar, not the native 30%.
+    const columns = [...binding.container.children].filter(layer => {
+      const style = getComputedStyle(layer);
+      return style.position === 'absolute' && style.pointerEvents === 'none' &&
+        style.display === 'flex' && style.flexDirection === 'row' &&
+        layer.children.length === 2 && [...layer.children].every(child => {
+          const style = getComputedStyle(child);
+          return style.borderLeftWidth !== '0px' || style.borderRightWidth !== '0px';
+        });
+    }).map(layer => layer.firstElementChild);
+    for (const [column, original] of binding.decorations) {
+      if (!columns.includes(column)) {
+        restoreStyles(column, original);
+        binding.decorations.delete(column);
+      }
+    }
+    for (const column of columns) {
+      if (!binding.decorations.has(column)) {
+        binding.decorations.set(column, properties.slice(0, 4).map(property => [
+          property, column.style.getPropertyValue(property), column.style.getPropertyPriority(property)
+        ]));
+      }
     }
   }
 
@@ -49,6 +81,7 @@
 
   function update() {
     if (!binding) return;
+    syncDecorations();
     const limits = bounds();
     const enabled = limits.max >= limits.min && binding.panel.getBoundingClientRect().height > 0;
     binding.handle.hidden = !enabled;
@@ -60,10 +93,12 @@
     binding.panel.style.setProperty('position', 'relative', 'important');
     if (preferredWidth !== null) {
       const width = Math.round(Math.max(limits.min, Math.min(limits.max, preferredWidth)));
-      for (const property of ['width', 'min-width', 'max-width']) {
-        binding.panel.style.setProperty(property, `${width}px`, 'important');
+      for (const column of [binding.panel, ...binding.decorations.keys()]) {
+        for (const property of ['width', 'min-width', 'max-width']) {
+          column.style.setProperty(property, `${width}px`, 'important');
+        }
+        column.style.setProperty('flex', `0 0 ${width}px`, 'important');
       }
-      binding.panel.style.setProperty('flex', `0 0 ${width}px`, 'important');
     }
     const width = Math.round(binding.panel.getBoundingClientRect().width / limits.scale);
     binding.handle.setAttribute('aria-valuemin', String(limits.min));
@@ -128,7 +163,7 @@
       handle.setAttribute('aria-orientation', 'vertical');
       handle.setAttribute('aria-label', 'Resize chat list');
       handle.title = 'Drag to resize chats · Double-click to reset';
-      binding = { ...next, handle, original: properties.map(property => [
+      binding = { ...next, handle, decorations: new Map(), original: properties.map(property => [
         property, next.panel.style.getPropertyValue(property), next.panel.style.getPropertyPriority(property)
       ]) };
       next.panel.setAttribute('data-wa-improver-sidebar', '');
