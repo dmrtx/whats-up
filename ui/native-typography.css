@@ -1,0 +1,46 @@
+/* Use macOS's native UI font without scaling avatars or icons.
+   Roles and semantic WhatsApp attributes survive generated class changes.
+   CSS also applies to chats rendered after the extension has loaded. */
+#app {
+  --wa-improver-ui-font: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif;
+  font-family: var(--wa-improver-ui-font) !important;
+}
+
+#app :where(div, span, p, a, label, h1, h2, h3, button, input, textarea):not(:where(pre, pre *, code, code *, kbd, kbd *)) {
+  font-family: var(--wa-improver-ui-font) !important;
+}
+
+/* Chat names and the conversation header. */
+#app :where(#pane-side, [data-testid="chat-list"]) [data-testid="cell-frame-title"],
+#app :where(#pane-side, [data-testid="chat-list"]) [data-testid="cell-frame-title"] [dir],
+#app #main header [dir="auto"] {
+  font-size: 14px !important;
+  line-height: 20px !important;
+}
+
+/* Preview text can include a sender, emoji and nested styled spans. */
+#app :where(#pane-side, [data-testid="chat-list"]) [data-testid="cell-frame-secondary"],
+#app :where(#pane-side, [data-testid="chat-list"]) [data-testid="cell-frame-secondary"] :where(div, span) {
+  font-size: 13px !important;
+  line-height: 18px !important;
+}
+
+#app :where(#side, [data-testid="chat-list"]) :where(input, [contenteditable="true"], [role="tab"], [role="tab"] span) {
+  font-size: 13px !important;
+  line-height: 18px !important;
+}
+
+/* Scope to message bodies, leaving timestamps, quoted metadata and monospace
+   code at their own sizes. Preserve WhatsApp's bold and italic formatting. */
+#app #main [data-pre-plain-text],
+#app #main [data-pre-plain-text] :where(.selectable-text, [data-testid="selectable-text"], [dir]):not(:where(pre, pre *, code, code *)),
+#app #main footer [contenteditable="true"],
+#app #main footer [contenteditable="true"] :where(p, span):not(:where(pre, pre *, code, code *)) {
+  font-size: 13px !important;
+  line-height: 18px !important;
+}
+
+#app :where([role="menuitem"], [role="menuitem"] span) {
+  font-size: 13px !important;
+  line-height: 18px !important;
+}
