@@ -2359,7 +2359,7 @@
       <button type="button" class="wa-improver-scale-btn" data-delta="-5" title="Decrease WhatsApp scale">−</button>
       <span class="wa-improver-scale-value">Scale: 100%</span>
       <button type="button" class="wa-improver-scale-btn" data-delta="5" title="Increase WhatsApp scale">+</button>
-      <span class="wa-improver-memory-value">Mem: --</span>
+      <span class="wa-improver-memory-value" title="JavaScript heap only; excludes DOM, decoded images and videos, and memory in other heaps.">JS heap: --</span>
       <button type="button" class="wa-improver-reload-btn" title="Reload WhatsApp Web" aria-label="Reload WhatsApp Web">Reload</button>
     `;
 
@@ -2396,7 +2396,7 @@
     }
 
     const snapshot = getMemorySnapshot();
-    valueEl.textContent = snapshot.available ? `Mem: ${snapshot.usedMB} MB` : 'Mem: N/A';
+    valueEl.textContent = snapshot.available ? `JS heap: ${snapshot.usedMB} MB` : 'JS heap: N/A';
   }
 
   function injectMemoryWidget() {

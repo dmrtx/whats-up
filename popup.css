@@ -299,6 +299,8 @@ main {
 .toggle {
   position: relative;
   display: inline-block;
+  flex: 0 0 46px;
+  margin-left: auto;
   width: 46px;
   height: 26px;
 }

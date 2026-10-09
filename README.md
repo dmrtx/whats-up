@@ -98,7 +98,7 @@ Right-clicking a message to open its context menu and then pressing the shortcut
 
 WhatsApp Web grows heavy over a long session. Under **Performance** in the popup:
 
-- **Memory Monitor** watches the JS heap every minute and trips at your MB limit *or* at 85% of the browser's heap limit, whichever comes first
+- **JavaScript Heap Monitor** watches the JS heap every minute and trips at your MB limit *or* at 85% of the browser's heap limit, whichever comes first. It excludes DOM nodes, decoded images/videos, and memory in other heaps, so it is not a measure of the tab's total memory usage
 - **Reload Automatically** reloads the tab by itself instead of only warning. It never reloads while you have an unsent draft or an active call, not within 5 minutes of page load, and not more than once every 15 minutes — those guards are what keep it from looping
 - **Show Notification Before Reload** puts a 15-second cancellable banner in front of every automatic reload. Turn it off for a silent reload
 - **Auto Reload (Daily)** reloads once per day at a time you pick
