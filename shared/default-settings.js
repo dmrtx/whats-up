@@ -21,17 +21,8 @@
       enabled: false,
       time: '04:00'
     },
-    memoryMonitor: {
-      enabled: true,
-      threshold: 1500,        // MB of used JS heap
-      // performance.memory only reports the JS heap and measures it against a
-      // fixed ~3.5 GB ceiling, not the machine's RAM. This percentage is an
-      // about-to-OOM backstop, not the everyday trigger — that is `threshold`.
-      percentThreshold: 85,
-      autoReload: true        // reload by itself instead of only warning
-    },
-    // The JS heap misses DOM nodes, images and media, which is most of what
-    // makes WhatsApp Web heavy. Uptime is a coarser but far more honest proxy.
+    // What makes WhatsApp Web heavy (DOM nodes, images, media) is not visible
+    // to an extension, so open time is the only honest trigger.
     uptimeReload: {
       enabled: false,
       hours: 12

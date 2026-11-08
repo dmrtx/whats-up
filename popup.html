@@ -9,34 +9,21 @@
 <body data-view="popup">
   <div class="container">
     <header>
-      <div class="header-top">
-        <div>
-          <h1>WhatsApp Web Improver</h1>
-          <p class="subtitle">Shortcuts, navigation, and performance in one place</p>
-        </div>
-      </div>
+      <h1>WhatsApp Web Improver</h1>
+      <p class="status">
+        <span id="connection-status" class="status-pill" data-state="offline">Not connected</span>
+        <span id="connection-detail" class="status-detail">Open WhatsApp Web to activate the extension.</span>
+      </p>
     </header>
 
     <main>
-      <div class="status-card">
-        <div class="status-row">
-          <span class="status-label">Extension Status</span>
-          <span id="connection-status" class="status-pill" data-state="offline">Not connected</span>
-        </div>
-        <p id="connection-detail" class="status-detail">Open WhatsApp Web to activate the extension.</p>
-      </div>
-
-      <div class="info-box">
-        <p><strong>Quick use:</strong> press <kbd>↑</kbd> (or <kbd>Alt</kbd>+<kbd>↑</kbd>) to pick a message, then your shortcut key. Right-clicking a message still works too.</p>
-      </div>
-
       <details class="panel" open>
         <summary>Message Navigation</summary>
         <div class="shortcuts-section">
         <div class="shortcut-item">
           <div class="shortcut-info">
             <label for="navigation-enabled">Navigate With Arrows</label>
-            <span class="description"><kbd>↑</kbd> from an empty composer, or <kbd>Alt</kbd>+<kbd>↑</kbd> anywhere. Then <kbd>↑</kbd>/<kbd>↓</kbd> to move and <kbd>Esc</kbd> to exit.</span>
+            <span class="description"><kbd>↑</kbd> in an empty composer, or <kbd>Alt</kbd> <kbd>↑</kbd> anywhere, selects a message. Then press its shortcut key. <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Esc</kbd> exits.</span>
           </div>
           <div class="shortcut-input">
             <label class="toggle">
@@ -187,7 +174,7 @@
         <div class="shortcut-item">
           <div class="shortcut-info">
             <label for="uptime-reload-enabled">Reload After Long Uptime</label>
-            <span class="description">More reliable than the memory reading below, which cannot see DOM and media growth</span>
+            <span class="description">Reload automatically once WhatsApp Web has been open this long</span>
           </div>
           <div class="shortcut-input">
             <select id="uptime-reload-hours">
@@ -200,52 +187,6 @@
               <input type="checkbox" id="uptime-reload-enabled">
               <span class="slider"></span>
             </label>
-          </div>
-        </div>
-
-        <div class="shortcut-item">
-          <div class="shortcut-info">
-            <label for="memory-monitor-enabled">JavaScript Heap Monitor</label>
-            <span class="description">Trips at this JS-heap size. Only measures JavaScript memory, so it under-reports the real usage.</span>
-          </div>
-          <div class="shortcut-input">
-            <select id="memory-threshold">
-              <option value="500">500 MB</option>
-              <option value="750">750 MB</option>
-              <option value="1000">1 GB</option>
-              <option value="1500" selected>1.5 GB</option>
-              <option value="2000">2 GB</option>
-              <option value="3000">3 GB</option>
-            </select>
-            <label class="toggle">
-              <input type="checkbox" id="memory-monitor-enabled" checked>
-              <span class="slider"></span>
-            </label>
-          </div>
-        </div>
-
-        <div class="shortcut-item">
-          <div class="shortcut-info">
-            <label for="memory-auto-reload">Reload Automatically</label>
-            <span class="description">Reload on its own when memory is high, instead of only warning. Never while you have a draft or a call.</span>
-          </div>
-          <div class="shortcut-input">
-            <label class="toggle">
-              <input type="checkbox" id="memory-auto-reload" checked>
-              <span class="slider"></span>
-            </label>
-          </div>
-        </div>
-
-        <div class="shortcut-item memory-display" id="memory-status" style="display: none;">
-          <div class="shortcut-info">
-            <label>Current JavaScript Heap</label>
-            <span class="description" id="memory-value">Checking...</span>
-          </div>
-          <div class="shortcut-input">
-            <div class="memory-bar">
-              <div class="memory-bar-fill" id="memory-bar-fill"></div>
-            </div>
           </div>
         </div>
 

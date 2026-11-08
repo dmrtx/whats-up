@@ -7,11 +7,9 @@ const {
   withDefaults
 } = window.WAImproverDefaults;
 
-const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
 const LAST_ACTIVE_KEY = 'waImproverLastSeen';
 
 let isPopupView = false;
-let lastMemorySnapshot = null;
 let lastSeenTimestamp = null;
 let isLoading = false;
 let autoSaveTimer = null;
@@ -41,8 +39,6 @@ function loadSettings() {
     // Load performance settings
     const autoReloadEnabled = document.getElementById('auto-reload-enabled');
     const reloadTime = document.getElementById('reload-time');
-    const memoryMonitorEnabled = document.getElementById('memory-monitor-enabled');
-    const memoryThreshold = document.getElementById('memory-threshold');
     const showReloadNotification = document.getElementById('show-reload-notification');
     
     if (autoReloadEnabled) {
@@ -51,12 +47,6 @@ function loadSettings() {
       reloadTime.disabled = !autoReloadEnabled.checked;
     }
     
-    if (memoryMonitorEnabled) {
-      memoryMonitorEnabled.checked = perfSettings.memoryMonitor?.enabled !== false;
-      memoryThreshold.value = perfSettings.memoryMonitor?.threshold || defaultPerformanceSettings.memoryMonitor.threshold;
-      memoryThreshold.disabled = !memoryMonitorEnabled.checked;
-    }
-
     const uptimeReloadEnabled = document.getElementById('uptime-reload-enabled');
     const uptimeReloadHours = document.getElementById('uptime-reload-hours');
     if (uptimeReloadEnabled && uptimeReloadHours) {
@@ -65,23 +55,11 @@ function loadSettings() {
       uptimeReloadHours.disabled = !uptimeReloadEnabled.checked;
     }
 
-    const memoryAutoReload = document.getElementById('memory-auto-reload');
-    if (memoryAutoReload) {
-      memoryAutoReload.checked = perfSettings.memoryMonitor?.autoReload !== false;
-      memoryAutoReload.disabled = !memoryMonitorEnabled?.checked;
-    }
-
     const navigationEnabled = document.getElementById('navigation-enabled');
     if (navigationEnabled) {
       navigationEnabled.checked = navSettings.enabled !== false;
     }
 
-    const memoryStatus = document.getElementById('memory-status');
-    if (memoryStatus) {
-      const shouldShowMemory = isPopupView || (memoryMonitorEnabled && memoryMonitorEnabled.checked);
-      memoryStatus.style.display = shouldShowMemory ? 'flex' : 'none';
-    }
-    
     if (showReloadNotification) {
       showReloadNotification.checked = perfSettings.showReloadNotification !== false;
     }
@@ -119,21 +97,11 @@ function saveSettings(options = {}) {
     return;
   }
 
-  const parsedThreshold = parseInt(document.getElementById('memory-threshold').value, 10);
-
   // Performance settings
   const performanceSettings = {
     autoReload: {
       enabled: document.getElementById('auto-reload-enabled').checked,
       time: document.getElementById('reload-time').value
-    },
-    memoryMonitor: {
-      enabled: document.getElementById('memory-monitor-enabled').checked,
-      threshold: Number.isFinite(parsedThreshold) && parsedThreshold > 0
-        ? parsedThreshold
-        : defaultPerformanceSettings.memoryMonitor.threshold,
-      percentThreshold: defaultPerformanceSettings.memoryMonitor.percentThreshold,
-      autoReload: document.getElementById('memory-auto-reload')?.checked !== false
     },
     uptimeReload: {
       enabled: document.getElementById('uptime-reload-enabled')?.checked === true,
@@ -224,9 +192,6 @@ function setupKeyInputListeners() {
 function setupPerformanceListeners() {
   const autoReloadEnabled = document.getElementById('auto-reload-enabled');
   const reloadTime = document.getElementById('reload-time');
-  const memoryMonitorEnabled = document.getElementById('memory-monitor-enabled');
-  const memoryThreshold = document.getElementById('memory-threshold');
-  const memoryStatus = document.getElementById('memory-status');
   
   if (autoReloadEnabled && reloadTime) {
     autoReloadEnabled.addEventListener('change', () => {
@@ -239,20 +204,6 @@ function setupPerformanceListeners() {
   if (uptimeReloadEnabled && uptimeReloadHours) {
     uptimeReloadEnabled.addEventListener('change', () => {
       uptimeReloadHours.disabled = !uptimeReloadEnabled.checked;
-    });
-  }
-  
-  if (memoryMonitorEnabled && memoryThreshold) {
-    memoryMonitorEnabled.addEventListener('change', () => {
-      memoryThreshold.disabled = !memoryMonitorEnabled.checked;
-      const memoryAutoReload = document.getElementById('memory-auto-reload');
-      if (memoryAutoReload) {
-        memoryAutoReload.disabled = !memoryMonitorEnabled.checked;
-      }
-      if (memoryStatus) {
-        const shouldShowMemory = isPopupView || memoryMonitorEnabled.checked;
-        memoryStatus.style.display = shouldShowMemory ? 'flex' : 'none';
-      }
     });
   }
 }
@@ -277,29 +228,6 @@ function setupAutoSave() {
     input.addEventListener('input', scheduleAutoSave);
     input.addEventListener('change', scheduleAutoSave);
   });
-}
-
-function getLocalMemorySnapshot() {
-  if (performance && performance.memory) {
-    const usedMB = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
-    const totalMB = Math.round(performance.memory.jsHeapSizeLimit / (1024 * 1024));
-    const percentage = totalMB > 0 ? Math.round((usedMB / totalMB) * 100) : 0;
-    return {
-      available: true,
-      usedMB,
-      totalMB,
-      percentage,
-      timestamp: Date.now(),
-      source: 'local'
-    };
-  }
-  
-  return {
-    available: false,
-    reason: 'Memory API not available',
-    timestamp: Date.now(),
-    source: 'local'
-  };
 }
 
 function formatAge(timestamp) {
@@ -330,62 +258,18 @@ function updateConnectionStatus() {
   detailEl.textContent = isFresh ? `Active ${formatAge(lastSeenTimestamp)}` : `Last seen ${formatAge(lastSeenTimestamp)}`;
 }
 
-function updateMemoryUI(snapshot) {
-  const memoryValue = document.getElementById('memory-value');
-  const memoryBarFill = document.getElementById('memory-bar-fill');
-  
-  if (!memoryValue || !memoryBarFill) return;
-  
-  if (!snapshot) {
-    memoryValue.textContent = 'Waiting for WhatsApp Web...';
-    memoryBarFill.style.width = '0%';
-    memoryBarFill.className = 'memory-bar-fill';
-    return;
-  }
-  
-  if (!snapshot.available) {
-    memoryValue.textContent = snapshot.reason || 'Memory info unavailable';
-    memoryBarFill.style.width = '0%';
-    memoryBarFill.className = 'memory-bar-fill';
-    return;
-  }
-  
-  const sourceLabel = snapshot.source === 'content' ? 'WhatsApp' : 'This page';
-  const ageLabel = snapshot.timestamp ? ` • ${formatAge(snapshot.timestamp)}` : '';
-  memoryValue.textContent = `${snapshot.usedMB} MB used (${sourceLabel})${ageLabel}`;
-  
-  const percentage = Math.min(snapshot.percentage || 0, 100);
-  memoryBarFill.style.width = `${percentage}%`;
-  memoryBarFill.className = 'memory-bar-fill';
-  
-  if (percentage > 80) {
-    memoryBarFill.classList.add('danger');
-  } else if (percentage > 60) {
-    memoryBarFill.classList.add('warning');
-  }
-}
-
-function refreshMemoryStatus() {
-  updateConnectionStatus();
-  updateMemoryUI(lastMemorySnapshot);
-}
-
-function loadMemoryStatus() {
-  chrome.storage.local.get([MEMORY_STATUS_KEY, LAST_ACTIVE_KEY], (data) => {
-    lastMemorySnapshot = data[MEMORY_STATUS_KEY] || null;
+function loadConnectionStatus() {
+  chrome.storage.local.get([LAST_ACTIVE_KEY], (data) => {
     lastSeenTimestamp = data[LAST_ACTIVE_KEY] || null;
-    
-    if (!lastMemorySnapshot && !isPopupView) {
-      lastMemorySnapshot = getLocalMemorySnapshot();
-    }
-    
-    refreshMemoryStatus();
+    updateConnectionStatus();
   });
 }
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   isPopupView = document.body?.dataset?.view === 'popup';
+  const theme = new URLSearchParams(location.search).get('theme');
+  if (theme === 'dark' || theme === 'light') document.documentElement.dataset.theme = theme;
   const isEmbedded = window.self !== window.top;
   document.body.classList.toggle('embedded-view', isEmbedded);
   document.documentElement.classList.toggle('embedded-view', isEmbedded);
@@ -396,23 +280,17 @@ document.addEventListener('DOMContentLoaded', () => {
   setupPerformanceListeners();
   setupAutoSave();
   
-  // Memory + connection status
-  loadMemoryStatus();
+  loadConnectionStatus();
   const refreshInterval = isPopupView ? 5000 : 10000;
-  setInterval(refreshMemoryStatus, refreshInterval);
+  setInterval(updateConnectionStatus, refreshInterval);
   
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     
-    if (changes[MEMORY_STATUS_KEY]) {
-      lastMemorySnapshot = changes[MEMORY_STATUS_KEY].newValue || null;
-    }
-    
     if (changes[LAST_ACTIVE_KEY]) {
       lastSeenTimestamp = changes[LAST_ACTIVE_KEY].newValue || null;
+      updateConnectionStatus();
     }
-    
-    refreshMemoryStatus();
   });
   
   const saveBtn = document.getElementById('save-btn');

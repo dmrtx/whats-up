@@ -232,7 +232,12 @@
         // A newly opened menu can cover the remaining probe points. Never
         // right-click that overlay (or another message) as part of this action.
         if (!actionTarget.contains(topMost) && !row.contains(topMost)) continue;
-        dispatchRightClickSequence(topMost, x, y);
+        // A message that is only a URL puts every probe point on the link, and
+        // a right-click on a link opens WhatsApp's link menu (no Reply or
+        // Forward). The message menu listens on an ancestor, so aim the event
+        // at the link's container instead.
+        const link = topMost.closest('a, [role="link"]');
+        dispatchRightClickSequence(link ? (link.parentElement || actionTarget) : topMost, x, y);
         return true;
       }
       return false;

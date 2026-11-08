@@ -36,7 +36,7 @@
   const extensionKeyboardEvents = new WeakSet();
   let optionsButtonObserver = null;
   let optionsButtonDebounceTimer = null;
-  let memoryWidgetDebounceTimer = null;
+  let scaleWidgetDebounceTimer = null;
   const PANEL_MIN_WIDTH = 360;
   const PANEL_MAX_WIDTH = 520;
   const UI_SCALE_STORAGE_KEY = 'waImproverUiScale';
@@ -49,7 +49,7 @@
     {
       command: 'gif',
       slash: '/gif',
-      icon: 'GIF',
+      icon: 'gif',
       description: 'Search GIFs',
       argHint: 'search text',
       argRequired: true
@@ -57,19 +57,24 @@
     {
       command: 'sticker',
       slash: '/sticker',
-      icon: '☺',
+      icon: 'sticker',
       description: 'Open stickers',
       argHint: 'search text (optional)',
       argRequired: false
     }
   ];
   const SLASH_MENU_ID = 'wa-improver-slash-menu';
+  // Static markup, never built from user input.
+  const SLASH_ICONS = {
+    gif: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="4"/><text x="12" y="15.1" text-anchor="middle" font-size="7" font-weight="700" fill="currentColor" stroke="none" font-family="-apple-system, system-ui, sans-serif">GIF</text></svg>',
+    sticker: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.2c.9 1.3 2 1.9 3.5 1.9s2.600-.6 3.500-1.900"/><circle cx="9" cy="10" r=".6" fill="currentColor"/><circle cx="15" cy="10" r=".6" fill="currentColor"/></svg>'
+  };
 
-  // Status + memory reporting (shared with popup/options)
-  const MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
+  // Connection status reporting (shared with popup/options)
   const LAST_ACTIVE_KEY = 'waImproverLastSeen';
-  const MEMORY_REPORT_INTERVAL_MS = 10000;
-  let lastMemoryReportAt = 0;
+  // Written by versions that reported the JS heap; removed on startup.
+  const LEGACY_MEMORY_STATUS_KEY = 'waImproverMemoryStatus';
+  const HEARTBEAT_INTERVAL_MS = 10000;
   let currentUiScale = 100;
   let extensionContextInvalid = false;
   let slashMenuComposer = null;
@@ -318,57 +323,25 @@
     return safeStorageLocalSet({ [LAST_ACTIVE_KEY]: Date.now() });
   }
   
-  function getMemorySnapshot() {
-    const timestamp = Date.now();
-    
-    if (performance && performance.memory) {
-      const usedMB = Math.round(performance.memory.usedJSHeapSize / (1024 * 1024));
-      const totalMB = Math.round(performance.memory.jsHeapSizeLimit / (1024 * 1024));
-      const percentage = totalMB > 0 ? Math.round((usedMB / totalMB) * 100) : 0;
-      
-      return {
-        available: true,
-        usedMB,
-        totalMB,
-        percentage,
-        timestamp,
-        source: 'content'
-      };
-    }
-    
-    return {
-      available: false,
-      reason: 'Memory API not available',
-      timestamp,
-      source: 'content'
-    };
-  }
-  
-  function reportMemorySnapshot(force = false) {
-    const now = Date.now();
-    if (!force && now - lastMemoryReportAt < MEMORY_REPORT_INTERVAL_MS) return;
-    
-    lastMemoryReportAt = now;
-    return safeStorageLocalSet({ [MEMORY_STATUS_KEY]: getMemorySnapshot() });
-  }
-  
   function startHeartbeat() {
     if (!markExtensionActive()) return;
-    reportMemorySnapshot(true);
-    
+
+    try {
+      chrome.storage.local.remove(LEGACY_MEMORY_STATUS_KEY);
+    } catch (error) {
+      // Only tidies up an old key; a failure changes nothing.
+    }
+
     const heartbeatTimer = setInterval(() => {
       if (!isExtensionContextValid()) {
         clearInterval(heartbeatTimer);
         return;
       }
 
-      const activeUpdated = markExtensionActive();
-      reportMemorySnapshot();
-
-      if (!activeUpdated) {
+      if (!markExtensionActive()) {
         clearInterval(heartbeatTimer);
       }
-    }, MEMORY_REPORT_INTERVAL_MS);
+    }, HEARTBEAT_INTERVAL_MS);
   }
 
   // ===== RELOAD =====
@@ -570,36 +543,6 @@
     }
   }
 
-  // Check memory usage
-  function checkMemoryUsage() {
-    const monitor = performanceSettings.memoryMonitor;
-    if (!monitor?.enabled) return;
-
-    const snapshot = getMemorySnapshot();
-    if (!snapshot.available) return;
-
-    const { usedMB, percentage } = snapshot;
-    const mbThreshold = monitor.threshold || defaultPerformanceSettings.memoryMonitor.threshold;
-    const percentThreshold = monitor.percentThreshold || defaultPerformanceSettings.memoryMonitor.percentThreshold;
-
-    debugLog(`📊 WhatsApp Web Improver: memory ${usedMB} MB (${percentage}% of limit) — thresholds ${mbThreshold} MB / ${percentThreshold}%`);
-
-    // usedMB is the everyday trigger. The percentage is measured against a
-    // fixed heap ceiling (~3.5 GB), so it only fires when the tab is genuinely
-    // close to running out of heap.
-    const overMb = usedMB > mbThreshold;
-    const overPercent = percentage > percentThreshold;
-    if (!overMb && !overPercent) return;
-
-    const reason = overPercent
-      ? `WhatsApp Web is using ${usedMB} MB (${percentage}% of the browser heap limit).`
-      : `WhatsApp Web is using ${usedMB} MB, over your ${mbThreshold} MB limit.`;
-
-    requestReload(`${reason} Reloading to free memory.`, {
-      auto: monitor.autoReload !== false
-    });
-  }
-
   // Check if it's time for scheduled reload
   function checkScheduledReload() {
     if (!performanceSettings.autoReload?.enabled) return;
@@ -624,8 +567,9 @@
     }
   }
 
-  // Uptime-based reload. Independent of performance.memory, which cannot see
-  // the DOM/media growth that actually slows a long WhatsApp Web session down.
+  // Uptime-based reload. The DOM and media growth that slows a long WhatsApp
+  // Web session down cannot be measured from an extension, so open time is the
+  // proxy.
   function checkUptimeReload() {
     const uptime = performanceSettings.uptimeReload;
     if (!uptime?.enabled) return;
@@ -648,12 +592,8 @@
     if (performanceMonitoringStarted) return;
     performanceMonitoringStarted = true;
 
-    // Heartbeat + memory snapshot (low frequency to keep overhead minimal)
+    // Heartbeat (low frequency to keep overhead minimal)
     startHeartbeat();
-
-    // Memory is checked every minute so a spike is caught while it matters;
-    // the reload guards keep that from turning into a reload loop.
-    setInterval(checkMemoryUsage, 60 * 1000);
 
     // Check scheduled + uptime reload every minute
     setInterval(() => {
@@ -663,12 +603,71 @@
 
     // Initial check after 1 minute
     setTimeout(() => {
-      checkMemoryUsage();
       checkScheduledReload();
       checkUptimeReload();
     }, 60 * 1000);
 
     debugLog('WhatsApp Web Improver: Performance monitoring started');
+  }
+
+  // WhatsApp's own theme, which can differ from the OS setting. Its dark theme
+  // puts a `dark` class on <body>; the background colour is the fallback.
+  function getWhatsAppTheme() {
+    if (document.body.classList.contains('dark') || document.documentElement.classList.contains('dark')) {
+      return 'dark';
+    }
+    for (const el of [document.querySelector('#app'), document.body]) {
+      const match = el && /rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)/.exec(getComputedStyle(el).backgroundColor);
+      if (match && match[4] !== '0') {
+        return (0.299 * match[1] + 0.587 * match[2] + 0.114 * match[3]) < 128 ? 'dark' : 'light';
+      }
+    }
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
+  function parseCssColor(value) {
+    const match = /rgba?\((\d+)[, ]+(\d+)[, ]+(\d+)(?:[,/ ]+([\d.]+%?))?\)/.exec(value || '');
+    if (!match) return null;
+    let alpha = match[4] === undefined ? 1 : parseFloat(match[4]);
+    if (match[4]?.endsWith('%')) alpha /= 100;
+    return { r: +match[1], g: +match[2], b: +match[3], a: alpha };
+  }
+
+  // Colours of WhatsApp's own surfaces, read from the page so our menus take
+  // whatever theme (or palette change) WhatsApp is showing. Returns null when
+  // they cannot be read, and the stylesheet's fallbacks apply.
+  function getNativeSurfaceColors() {
+    let bg = null;
+    for (let el = document.querySelector('#pane-side, #side') || document.querySelector('#app'); el && !bg; el = el.parentElement) {
+      const color = parseCssColor(getComputedStyle(el).backgroundColor);
+      if (color && color.a > 0.9) bg = color;
+    }
+    const fg = parseCssColor(getComputedStyle(document.body).color);
+    return bg && fg && fg.a > 0.9 ? { bg, fg } : null;
+  }
+
+  function applyNativeSurfaceColors(element) {
+    const colors = getNativeSurfaceColors();
+    const names = ['--wai-bg', '--wai-border', '--wai-primary', '--wai-secondary', '--wai-icon', '--wai-hover', '--wai-key'];
+    if (!colors) {
+      names.forEach((name) => element.style.removeProperty(name));
+      return;
+    }
+    const { bg, fg } = colors;
+    const rgb = (c) => `rgb(${c.r}, ${c.g}, ${c.b})`;
+    const over = (alpha) => `rgba(${fg.r}, ${fg.g}, ${fg.b}, ${alpha})`;
+    const blend = (alpha) => rgb({
+      r: Math.round(bg.r + (fg.r - bg.r) * alpha),
+      g: Math.round(bg.g + (fg.g - bg.g) * alpha),
+      b: Math.round(bg.b + (fg.b - bg.b) * alpha)
+    });
+    element.style.setProperty('--wai-bg', rgb(bg));
+    element.style.setProperty('--wai-border', blend(0.14));
+    element.style.setProperty('--wai-primary', rgb(fg));
+    element.style.setProperty('--wai-secondary', blend(0.6));
+    element.style.setProperty('--wai-icon', blend(0.8));
+    element.style.setProperty('--wai-hover', over(0.06));
+    element.style.setProperty('--wai-key', over(0.08));
   }
 
   // ===== MESSAGE NAVIGATION =====
@@ -680,58 +679,81 @@
     const styles = document.createElement('style');
     styles.id = 'wa-improver-nav-styles';
     styles.textContent = `
-      .wa-improver-selected-message {
-        outline: 2px solid rgba(37, 211, 102, 0.9) !important;
-        outline-offset: 1px;
-        border-radius: 8px;
-        transition: outline-color 0.12s ease;
+      /* A translucent green wash over the whole row. It is a pseudo-element
+         because WhatsApp's bubbles sit in their own stacking contexts and
+         would otherwise paint over a background on the row itself. */
+      .wa-improver-selected-message-anchor {
+        position: relative !important;
       }
 
+      .wa-improver-selected-message::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: rgba(37, 211, 102, 0.24);
+        pointer-events: none;
+        z-index: 10;
+      }
+
+      /* Same neutral surface and text colours as WhatsApp's own menus. */
       .wa-improver-nav-indicator {
+        --wai-bg: #161717;
+        --wai-border: #2e2f2f;
+        --wai-primary: #e9edef;
+        --wai-secondary: #8d9498;
+        --wai-key: rgba(255, 255, 255, 0.08);
+        --wai-accent: #25d366;
         position: fixed;
         bottom: 76px;
         left: 50%;
         transform: translateX(-50%);
-        background: rgba(20, 26, 24, 0.94);
-        backdrop-filter: blur(8px);
-        border: 1px solid rgba(37, 211, 102, 0.35);
-        color: #e9f3ee;
-        padding: 5px 12px;
+        background: var(--wai-bg);
+        border: 1px solid var(--wai-border);
+        color: var(--wai-primary);
+        padding: 6px 14px;
         border-radius: 999px;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 11.5px;
+        font-family: inherit;
+        font-size: 12px;
         line-height: 1.4;
         white-space: nowrap;
         z-index: 999998;
-        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+        box-shadow: 0 2px 5px rgba(11, 20, 26, 0.26), 0 2px 10px rgba(11, 20, 26, 0.16);
         display: flex;
         align-items: center;
         gap: 10px;
         pointer-events: none;
-        opacity: 0.95;
+      }
+
+      .wa-improver-nav-indicator[data-wai-theme="light"] {
+        --wai-bg: #ffffff;
+        --wai-border: #e9edef;
+        --wai-primary: #111b21;
+        --wai-secondary: #667781;
+        --wai-key: rgba(11, 20, 26, 0.06);
+        --wai-accent: #008069;
       }
 
       .wa-improver-nav-indicator.error {
         border-color: rgba(240, 110, 110, 0.7);
-        color: #ffd9d9;
       }
 
       .wa-improver-nav-indicator .nav-position {
         font-weight: 600;
-        color: #6ee7a0;
+        color: var(--wai-accent);
       }
 
       .wa-improver-nav-indicator .nav-hint {
-        color: #9db3a8;
+        color: var(--wai-secondary);
       }
 
       .wa-improver-nav-indicator kbd {
-        background: rgba(255, 255, 255, 0.12);
-        padding: 1px 5px;
+        background: var(--wai-key);
+        color: var(--wai-primary);
+        padding: 1px 6px;
         border-radius: 4px;
         font-family: inherit;
-        font-size: 10.5px;
-        border: 1px solid rgba(255, 255, 255, 0.16);
+        font-size: 11px;
+        border: 0;
       }
     `;
     document.head.appendChild(styles);
@@ -743,97 +765,91 @@
     const styles = document.createElement('style');
     styles.id = 'wa-improver-slash-styles';
     styles.textContent = `
+      /* Geometry and colours measured from WhatsApp's own chat context menu:
+         36px rows, icon 16px from the edge, text 44px from it, 1px border. */
+      #${SLASH_MENU_ID} {
+        --wai-bg: #161717;
+        --wai-border: #2e2f2f;
+        --wai-primary: #e9edef;
+        --wai-secondary: #8d9498;
+        --wai-icon: #c4c9cc;
+        --wai-hover: rgba(255, 255, 255, 0.06);
+      }
+
+      #${SLASH_MENU_ID}[data-wai-theme="light"] {
+        --wai-bg: #ffffff;
+        --wai-border: #e9edef;
+        --wai-primary: #111b21;
+        --wai-secondary: #667781;
+        --wai-icon: #54656f;
+        --wai-hover: rgba(11, 20, 26, 0.05);
+      }
+
       #${SLASH_MENU_ID} {
         position: fixed;
         z-index: 999999;
-        width: min(420px, calc(100vw - 24px));
-        background: rgba(17, 27, 23, 0.98);
-        backdrop-filter: blur(10px);
-        color: #e9f3ee;
-        border: 1px solid rgba(37, 211, 102, 0.28);
-        border-radius: 10px;
-        padding: 4px;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 13px;
-        box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+        box-sizing: border-box;
+        width: max-content;
+        min-width: 232px;
+        max-width: min(360px, calc(100vw - 24px));
+        padding: 8px 0;
+        background: var(--wai-bg);
+        color: var(--wai-primary);
+        border: 1px solid var(--wai-border);
+        border-radius: 16px;
+        font-family: inherit;
+        font-size: 14px;
+        box-shadow: 0 2px 5px rgba(11, 20, 26, 0.26), 0 2px 10px rgba(11, 20, 26, 0.16);
         overflow: hidden;
-      }
-
-      #${SLASH_MENU_ID} .wa-slash-header {
-        padding: 5px 9px 6px;
-        font-size: 10.5px;
-        letter-spacing: 0.5px;
-        text-transform: uppercase;
-        color: #7f968b;
       }
 
       #${SLASH_MENU_ID} .wa-slash-item {
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 7px 9px;
-        border-radius: 7px;
+        gap: 8px;
+        height: 36px;
+        padding: 0 24px 0 16px;
         cursor: pointer;
+        white-space: nowrap;
       }
 
-      #${SLASH_MENU_ID} .wa-slash-item[aria-selected="true"] {
-        background: rgba(37, 211, 102, 0.16);
+      /* Native menus only tint the row under the pointer, so a lone match (or
+         the hint shown once a command is chosen) stays untinted. */
+      #${SLASH_MENU_ID} .wa-slash-item[aria-selected="true"]:not(:only-child) {
+        background: var(--wai-hover);
+      }
+
+      #${SLASH_MENU_ID}.ready .wa-slash-item[aria-selected] {
+        background: none;
       }
 
       #${SLASH_MENU_ID} .wa-slash-icon {
-        flex: 0 0 30px;
-        height: 22px;
+        flex: 0 0 20px;
         display: flex;
         align-items: center;
         justify-content: center;
-        background: rgba(255, 255, 255, 0.08);
-        border-radius: 5px;
-        font-size: 10px;
-        font-weight: 700;
-        color: #9fe8bd;
+        height: 20px;
+        color: var(--wai-icon);
+      }
+
+      #${SLASH_MENU_ID} .wa-slash-icon svg {
+        width: 20px;
+        height: 20px;
       }
 
       #${SLASH_MENU_ID} .wa-slash-name {
-        font-weight: 600;
-        color: #f0f7f3;
+        color: var(--wai-primary);
       }
 
-      #${SLASH_MENU_ID} .wa-slash-item[aria-selected="true"] .wa-slash-name {
-        color: #6ee7a0;
-      }
-
-      #${SLASH_MENU_ID} .wa-slash-desc {
-        color: #93a89e;
-        font-size: 12px;
-      }
-
+      #${SLASH_MENU_ID} .wa-slash-desc,
       #${SLASH_MENU_ID} .wa-slash-arg {
-        color: #7f968b;
-        font-size: 12px;
-        font-style: italic;
+        color: var(--wai-secondary);
       }
 
       #${SLASH_MENU_ID} .wa-slash-footer {
-        display: flex;
-        gap: 10px;
-        padding: 6px 9px 4px;
-        margin-top: 2px;
-        border-top: 1px solid rgba(255, 255, 255, 0.07);
-        color: #7f968b;
-        font-size: 11px;
-      }
-
-      #${SLASH_MENU_ID} kbd {
-        background: rgba(255, 255, 255, 0.1);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 4px;
-        padding: 0 4px;
-        font-family: inherit;
-        font-size: 10.5px;
-      }
-
-      #${SLASH_MENU_ID}.ready .wa-slash-item[aria-selected="true"] {
-        background: rgba(37, 211, 102, 0.24);
+        padding: 2px 24px 6px 44px;
+        color: var(--wai-secondary);
+        font-size: 12px;
       }
     `;
     document.head.appendChild(styles);
@@ -1250,6 +1266,8 @@
 
   function renderSlashMenu() {
     const menu = getOrCreateSlashMenu();
+    menu.dataset.waiTheme = getWhatsAppTheme();
+    applyNativeSurfaceColors(menu);
     const composer = slashMenuComposer;
     if (!composer) return;
 
@@ -1272,14 +1290,14 @@
         </div>
         <div class="wa-slash-footer"></div>
       `;
-      menu.querySelector('.wa-slash-icon').textContent = exact.icon;
+      menu.querySelector('.wa-slash-icon').innerHTML = SLASH_ICONS[exact.icon] || '';
       menu.querySelector('.wa-slash-name').textContent = exact.slash;
       menu.querySelector('.wa-slash-arg').textContent = parsed.query
         ? ` ${parsed.query}`
         : ` ${exact.argHint}`;
-      menu.querySelector('.wa-slash-footer').innerHTML = canRun
-        ? '<span><kbd>Enter</kbd> run</span><span><kbd>Esc</kbd> cancel</span>'
-        : `<span>Type the ${exact.argHint}</span><span><kbd>Esc</kbd> cancel</span>`;
+      menu.querySelector('.wa-slash-footer').textContent = canRun
+        ? 'Enter to run · Esc to cancel'
+        : `Type the ${exact.argHint} · Esc to cancel`;
 
       positionSlashMenu(menu, composer);
       return;
@@ -1290,7 +1308,7 @@
       return;
     }
 
-    menu.innerHTML = '<div class="wa-slash-header">Commands</div>';
+    menu.replaceChildren();
 
     slashMenuMatches.forEach((definition, index) => {
       const item = document.createElement('div');
@@ -1300,17 +1318,15 @@
 
       const icon = document.createElement('span');
       icon.className = 'wa-slash-icon';
-      icon.textContent = definition.icon;
+      icon.innerHTML = SLASH_ICONS[definition.icon] || '';
 
       const text = document.createElement('span');
       const name = document.createElement('span');
       name.className = 'wa-slash-name';
       name.textContent = definition.slash;
-      const desc = document.createElement('span');
-      desc.className = 'wa-slash-desc';
-      desc.textContent = ` — ${definition.description}`;
+      // WhatsApp's own menus carry a label only; the description is a tooltip.
+      item.title = definition.description;
       text.appendChild(name);
-      text.appendChild(desc);
 
       item.appendChild(icon);
       item.appendChild(text);
@@ -1328,11 +1344,6 @@
 
       menu.appendChild(item);
     });
-
-    const footer = document.createElement('div');
-    footer.className = 'wa-slash-footer';
-    footer.innerHTML = '<span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Tab</kbd>/<kbd>Enter</kbd> pick</span><span><kbd>Esc</kbd> close</span>';
-    menu.appendChild(footer);
 
     positionSlashMenu(menu, composer);
   }
@@ -1487,6 +1498,8 @@
 
     const current = selectedMessageIndex + 1;
     const total = messageElements.length;
+    indicator.dataset.waiTheme = getWhatsAppTheme();
+    applyNativeSurfaceColors(indicator);
 
     // Deliberately terse: this floats over the chat the whole time navigation
     // is on, so it lists the position and the keys, nothing else.
@@ -1549,7 +1562,7 @@
 
   function clearMessageHighlight() {
     document.querySelectorAll('.wa-improver-selected-message').forEach((el) => {
-      el.classList.remove('wa-improver-selected-message');
+      el.classList.remove('wa-improver-selected-message', 'wa-improver-selected-message-anchor');
     });
   }
 
@@ -1563,6 +1576,10 @@
     const msg = messageElements[index];
     selectedMessageElement = msg;
     selectedMessageIdentity = getMessageIdentity(msg);
+    // The ring is absolutely positioned, so the row must be a containing block.
+    if (getComputedStyle(msg).position === 'static') {
+      msg.classList.add('wa-improver-selected-message-anchor');
+    }
     msg.classList.add('wa-improver-selected-message');
 
     if (scroll) {
@@ -2181,16 +2198,20 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border-radius: 18px;
+        border-radius: 50%;
         color: #25D366;
-        background: rgba(37, 211, 102, 0.14);
-        border: 1px solid rgba(37, 211, 102, 0.35);
+        background: transparent;
+        border: none;
+        padding: 0;
         cursor: pointer;
         user-select: none;
+        transition: background-color 0.15s ease;
       }
 
-      #wa-improver-options-btn:hover {
-        background: rgba(37, 211, 102, 0.22);
+      #wa-improver-options-btn:hover,
+      #wa-improver-options-btn:focus-visible {
+        background: rgba(37, 211, 102, 0.16);
+        outline: none;
       }
 
       #wa-improver-options-btn svg {
@@ -2199,7 +2220,7 @@
         display: block;
       }
 
-      #wa-improver-memory-widget {
+      #wa-improver-scale-widget {
         display: inline-flex;
         align-items: center;
         gap: 8px;
@@ -2213,17 +2234,12 @@
         line-height: 1;
       }
 
-      #wa-improver-memory-widget .wa-improver-memory-value {
+      #wa-improver-scale-widget .wa-improver-scale-value {
         font-weight: 600;
         letter-spacing: 0.2px;
       }
 
-      #wa-improver-memory-widget .wa-improver-scale-value {
-        font-weight: 600;
-        letter-spacing: 0.2px;
-      }
-
-      #wa-improver-memory-widget .wa-improver-scale-btn {
+      #wa-improver-scale-widget .wa-improver-scale-btn {
         border: none;
         background: rgba(255, 255, 255, 0.14);
         color: rgba(255, 255, 255, 0.95);
@@ -2233,11 +2249,11 @@
         cursor: pointer;
       }
 
-      #wa-improver-memory-widget .wa-improver-scale-btn:hover {
+      #wa-improver-scale-widget .wa-improver-scale-btn:hover {
         background: rgba(255, 255, 255, 0.24);
       }
 
-      #wa-improver-memory-widget .wa-improver-reload-btn {
+      #wa-improver-scale-widget .wa-improver-reload-btn {
         border: none;
         background: rgba(37, 211, 102, 0.2);
         color: #25D366;
@@ -2247,7 +2263,7 @@
         cursor: pointer;
       }
 
-      #wa-improver-memory-widget .wa-improver-reload-btn:hover {
+      #wa-improver-scale-widget .wa-improver-reload-btn:hover {
         background: rgba(37, 211, 102, 0.3);
       }
     `;
@@ -2294,8 +2310,14 @@
   }
 
   function getSidebarHeader() {
-    const sideRoot = document.querySelector('#side, [data-testid="chat-list"]') || document;
-    return sideRoot.querySelector('header, [data-testid="chat-list-header"], div[role="banner"]');
+    const selector = 'header, [data-testid="chat-list-header"], div[role="banner"]';
+    const sideRoot = document.querySelector('#side, [data-testid="chat-list"]');
+    if (sideRoot) return sideRoot.querySelector(selector);
+
+    // Without the sidebar root, never fall back to the first header on the
+    // page: that can be the open chat's header, and the buttons would land there.
+    return Array.from(document.querySelectorAll(selector))
+      .find((header) => !header.closest('#main')) || null;
   }
 
   function findHeaderActionsRow() {
@@ -2352,14 +2374,13 @@
     return sidebarHeader;
   }
 
-  function createMemoryWidget() {
+  function createScaleWidget() {
     const widget = document.createElement('div');
-    widget.id = 'wa-improver-memory-widget';
+    widget.id = 'wa-improver-scale-widget';
     widget.innerHTML = `
       <button type="button" class="wa-improver-scale-btn" data-delta="-5" title="Decrease WhatsApp scale">−</button>
       <span class="wa-improver-scale-value">Scale: 100%</span>
       <button type="button" class="wa-improver-scale-btn" data-delta="5" title="Increase WhatsApp scale">+</button>
-      <span class="wa-improver-memory-value" title="JavaScript heap only; excludes DOM, decoded images and videos, and memory in other heaps.">JS heap: --</span>
       <button type="button" class="wa-improver-reload-btn" title="Reload WhatsApp Web" aria-label="Reload WhatsApp Web">Reload</button>
     `;
 
@@ -2369,7 +2390,7 @@
         event.stopPropagation();
         const delta = parseInt(button.getAttribute('data-delta') || '0', 10);
         applyWhatsAppScale(currentUiScale + (Number.isFinite(delta) ? delta : UI_SCALE_STEP));
-        updateMemoryWidget();
+        updateScaleWidget();
       });
     });
 
@@ -2383,28 +2404,22 @@
     return widget;
   }
 
-  function updateMemoryWidget() {
-    const widget = document.getElementById('wa-improver-memory-widget');
+  function updateScaleWidget() {
+    const widget = document.getElementById('wa-improver-scale-widget');
     if (!widget) return;
-
-    const valueEl = widget.querySelector('.wa-improver-memory-value');
-    if (!valueEl) return;
 
     const scaleEl = widget.querySelector('.wa-improver-scale-value');
     if (scaleEl) {
       scaleEl.textContent = `Scale: ${currentUiScale}%`;
     }
-
-    const snapshot = getMemorySnapshot();
-    valueEl.textContent = snapshot.available ? `JS heap: ${snapshot.usedMB} MB` : 'JS heap: N/A';
   }
 
-  function injectMemoryWidget() {
+  function injectScaleWidget() {
     ensureInjectedUiStyles();
 
-    const existing = document.getElementById('wa-improver-memory-widget');
+    const existing = document.getElementById('wa-improver-scale-widget');
     if (existing) {
-      updateMemoryWidget();
+      updateScaleWidget();
       return;
     }
 
@@ -2413,7 +2428,7 @@
 
     const titleNode = findSidebarTitleNode(sidebarHeader);
     const titleContainer = findSidebarTitleContainer(sidebarHeader, titleNode);
-    const widget = createMemoryWidget();
+    const widget = createScaleWidget();
 
     if (titleContainer) {
       titleContainer.appendChild(widget);
@@ -2421,8 +2436,8 @@
       sidebarHeader.prepend(widget);
     }
 
-    updateMemoryWidget();
-    debugLog('WhatsApp Web Improver: Memory widget injected');
+    updateScaleWidget();
+    debugLog('WhatsApp Web Improver: Scale widget injected');
   }
 
   function findHeaderAnchorButton() {
@@ -2488,6 +2503,9 @@
 
     const actionsRow = findHeaderActionsRow();
     if (!actionsRow) {
+      // Floating placement is computed from the sidebar header. Without one the
+      // button would sit unpositioned over whatever is at the page origin.
+      if (!getSidebarHeader()) return;
       const floatingBtn = createOptionsButton();
       document.body.appendChild(floatingBtn);
       positionFloatingOptionsButton(floatingBtn);
@@ -2551,7 +2569,7 @@
       });
 
       const iframe = document.createElement('iframe');
-      iframe.src = chrome.runtime.getURL('popup.html');
+      iframe.src = `${chrome.runtime.getURL('popup.html')}?theme=${getWhatsAppTheme()}`;
       iframe.style.setProperty('width', '100%', 'important');
       iframe.style.setProperty('min-width', '100%', 'important');
       iframe.style.setProperty('max-width', '100%', 'important');
@@ -2615,15 +2633,14 @@
     }, 200);
   }
 
-  // WhatsApp mutates <body> continuously while scrolling or typing. Injecting
-  // the widget on every mutation meant re-reading memory hundreds of times a
-  // second, which is what made the extension itself feel heavy.
-  function scheduleInjectMemoryWidget() {
-    if (memoryWidgetDebounceTimer) return;
+  // WhatsApp mutates <body> continuously while scrolling or typing, so the
+  // widget is only re-injected (debounced) once it is actually gone.
+  function scheduleInjectScaleWidget() {
+    if (scaleWidgetDebounceTimer) return;
 
-    memoryWidgetDebounceTimer = setTimeout(() => {
-      memoryWidgetDebounceTimer = null;
-      injectMemoryWidget();
+    scaleWidgetDebounceTimer = setTimeout(() => {
+      scaleWidgetDebounceTimer = null;
+      injectScaleWidget();
     }, 500);
   }
 
@@ -2631,16 +2648,16 @@
     if (optionsButtonObserver || !document.body) return;
 
     injectOptionsButton();
-    injectMemoryWidget();
+    injectScaleWidget();
 
     optionsButtonObserver = new MutationObserver(() => {
       // The widget only needs re-injecting when it is actually gone; that check
-      // is a cheap id lookup compared to the work injectMemoryWidget does.
+      // is a cheap id lookup compared to the work injectScaleWidget does.
       if (!document.getElementById('wa-improver-options-btn')) {
         scheduleInjectOptionsButton();
       }
-      if (!document.getElementById('wa-improver-memory-widget')) {
-        scheduleInjectMemoryWidget();
+      if (!document.getElementById('wa-improver-scale-widget')) {
+        scheduleInjectScaleWidget();
       }
     });
 
@@ -2658,7 +2675,7 @@
   // common case, so this only needs to re-check, not re-do the work.
   setInterval(() => {
     injectOptionsButton();
-    injectMemoryWidget();
+    injectScaleWidget();
     applyWhatsAppScale(currentUiScale, false);
 
     const panel = document.getElementById('wa-improver-options-panel');

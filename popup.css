@@ -1,13 +1,48 @@
+/* Follows WhatsApp Web's own settings screens so the panel reads as part of
+   the app: flat rows, one accent, no cards. */
 :root {
-  --bg-deep: #0b1d18;
-  --bg-mid: #0f2b23;
-  --accent: #25D366;
-  --accent-dark: #128C7E;
-  --surface: #ffffff;
-  --surface-soft: #f4f8f6;
-  --text: #1a1f1d;
-  --muted: #5a6b66;
-  --shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+  --bg: #ffffff;
+  --header: #f0f2f5;
+  --text: #111b21;
+  --muted: #667781;
+  --divider: #e9edef;
+  --field: #f0f2f5;
+  --accent: #00a884;
+  --accent-soft: rgba(0, 168, 132, 0.14);
+  --off: #c4cbd0;
+  --warn: #d9961a;
+  --error: #ea4a4a;
+  color-scheme: light;
+}
+
+/* Inside WhatsApp the page passes its own theme (?theme=), which can differ
+   from the OS; the toolbar popup follows the OS. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111b21;
+    --header: #202c33;
+    --text: #e9edef;
+    --muted: #8696a0;
+    --divider: #222d34;
+    --field: #2a3942;
+    --accent: #00a884;
+    --accent-soft: rgba(0, 168, 132, 0.22);
+    --off: #3b4a54;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #111b21;
+  --header: #202c33;
+  --text: #e9edef;
+  --muted: #8696a0;
+  --divider: #222d34;
+  --field: #2a3942;
+  --accent: #00a884;
+  --accent-soft: rgba(0, 168, 132, 0.22);
+  --off: #3b4a54;
+  color-scheme: dark;
 }
 
 * {
@@ -16,209 +51,120 @@
   box-sizing: border-box;
 }
 
+html,
 body {
-  font-family: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif;
-  font-size: 13px;
-  line-height: 1.4;
-  background:
-    radial-gradient(circle at 10% 10%, rgba(37, 211, 102, 0.18), transparent 45%),
-    radial-gradient(circle at 80% 0%, rgba(18, 140, 126, 0.22), transparent 35%),
-    linear-gradient(160deg, var(--bg-deep), var(--bg-mid));
   width: 390px;
   height: 620px;
-  padding: 10px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  background: var(--bg);
   color: var(--text);
   overflow: hidden;
 }
 
-html {
-  width: 390px;
-  height: 620px;
+html.embedded-view,
+body.embedded-view {
+  width: 100%;
+  height: 100%;
 }
 
 button,
 input,
-select,
-textarea {
+select {
   font-family: inherit;
-}
-
-body.embedded-view {
-  width: 100%;
-  height: 100%;
-  padding: 8px;
-}
-
-html.embedded-view {
-  width: 100%;
-  height: 100%;
+  font-size: inherit;
+  color: inherit;
 }
 
 .container {
-  background: var(--surface);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  overflow: hidden;
-  width: 100%;
-  height: 100%;
-  margin: 0;
   display: flex;
   flex-direction: column;
+  width: 100%;
+  height: 100%;
   min-height: 0;
 }
 
-body.embedded-view .container {
-  border-radius: 14px;
-}
+/* Header */
 
 header {
-  background: linear-gradient(135deg, var(--accent), var(--accent-dark));
-  color: white;
-  padding: 16px 18px 14px;
-}
-
-.header-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  flex: 0 0 auto;
+  padding: 14px 20px 12px;
+  background: var(--header);
 }
 
 header h1 {
-  font-size: 17px;
-  margin-bottom: 4px;
-  letter-spacing: 0.2px;
+  font-size: 16px;
+  font-weight: 600;
 }
 
-.subtitle {
-  opacity: 0.92;
-  font-size: 12px;
-}
-
-main {
-  padding: 12px;
+.status {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-}
-
-.status-card {
-  background: linear-gradient(135deg, #f3fbf6, #e8f6f1);
-  border-radius: 12px;
-  padding: 12px;
-  border: 1px solid #d4ece0;
-}
-
-.status-row {
-  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
-
-.status-label {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
+  gap: 2px 8px;
+  margin-top: 3px;
+  font-size: 12.5px;
   color: var(--muted);
-  font-weight: 700;
 }
 
 .status-pill {
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  text-transform: uppercase;
-  font-weight: 800;
-  letter-spacing: 0.6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  color: var(--text);
 }
 
-.status-pill[data-state="online"] {
-  background: rgba(37, 211, 102, 0.2);
-  color: #0b5f3c;
+.status-pill::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
 }
 
-.status-pill[data-state="idle"] {
-  background: rgba(255, 193, 7, 0.18);
-  color: #7b5a00;
+.status-pill[data-state="online"]::before { background: var(--accent); }
+.status-pill[data-state="idle"]::before { background: var(--warn); }
+.status-pill[data-state="offline"]::before { background: var(--error); }
+
+/* Body */
+
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-bottom: 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--off) transparent;
 }
 
-.status-pill[data-state="offline"] {
-  background: rgba(244, 67, 54, 0.15);
-  color: #8c1d16;
+main::-webkit-scrollbar {
+  width: 8px;
 }
 
-.status-detail {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.info-box {
-  background: var(--surface-soft);
-  border-left: 3px solid var(--accent);
-  padding: 10px 12px;
+main::-webkit-scrollbar-thumb {
+  background: var(--off);
   border-radius: 8px;
-}
-
-.info-box p {
-  font-size: 12px;
-  color: var(--text);
-  line-height: 1.4;
-}
-
-.info-box.compact {
-  margin-top: 8px;
-}
-
-.info-box kbd {
-  background: #222;
-  color: #fff;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-family: ui-monospace, Menlo, monospace;
-}
-
-.shortcuts-section h2,
-.performance-section h2 {
-  font-size: 17px;
-  color: var(--text);
-  margin-bottom: 12px;
-}
-
-.shortcuts-section h2,
-.performance-section h2 {
-  display: none;
-}
-
-.panel {
-  border: 1px solid #e2ece7;
-  border-radius: 10px;
-  background: #fafcfb;
-  overflow: hidden;
-  /* main is a bounded flex column, so without this the panels shrink to a few
-     pixels and their content is clipped instead of scrolling with main. */
-  flex: 0 0 auto;
+  border: 2px solid var(--bg);
 }
 
 .panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 6px;
   list-style: none;
   cursor: pointer;
-  padding: 10px 12px;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.4px;
-  color: #29433a;
-  text-transform: uppercase;
-  background: linear-gradient(180deg, #f3faf7, #edf6f2);
-  border-bottom: 1px solid #deebe4;
+  user-select: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
 }
 
 .panel summary::-webkit-details-marker {
@@ -226,220 +172,192 @@ main {
 }
 
 .panel summary::after {
-  content: '▾';
-  float: right;
-  color: #4a655c;
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
 }
 
 .panel[open] summary::after {
-  content: '▴';
+  transform: rotate(45deg);
 }
 
-.panel .shortcuts-section,
-.panel .performance-section {
-  padding: 10px;
+.panel summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
+
+.shortcuts-section h2,
+.performance-section h2 {
+  display: none;
+}
+
+/* Rows: the divider sits inside the side padding, like WhatsApp's lists. */
 
 .shortcut-item {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
-  border-radius: 10px;
-  background: #f7f9f8;
-  border: 1px solid #eef2f0;
-  margin-bottom: 8px;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 20px;
+  padding: 11px 0;
+}
+
+.shortcut-item + .shortcut-item {
+  border-top: 1px solid var(--divider);
 }
 
 .shortcut-info {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .shortcut-info label {
   display: block;
-  font-weight: 700;
-  font-size: 13px;
-  margin-bottom: 2px;
+  font-size: 14px;
 }
 
 .shortcut-info .description {
+  display: block;
+  margin-top: 1px;
+  font-size: 12.5px;
+  line-height: 1.4;
   color: var(--muted);
-  font-size: 12px;
 }
 
 .shortcut-input {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+}
+
+kbd {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--field);
+  color: var(--text);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  line-height: 17px;
 }
 
 .shortcut-input input[type="text"] {
-  width: 42px;
-  height: 42px;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--field);
   text-align: center;
-  font-size: 14px;
-  font-weight: 700;
-  border: 2px solid #dfe7e2;
-  border-radius: 8px;
+  font-weight: 600;
   text-transform: lowercase;
-}
-
-.shortcut-input input[type="text"]:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 211, 102, 0.15);
-}
-
-.shortcut-input input[type="text"]:disabled {
-  background: #eef2f0;
-  color: #98a4a0;
-}
-
-.toggle {
-  position: relative;
-  display: inline-block;
-  flex: 0 0 46px;
-  margin-left: auto;
-  width: 46px;
-  height: 26px;
-}
-
-.toggle input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
-.slider {
-  position: absolute;
-  cursor: pointer;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: #cfd9d4;
-  transition: 0.3s;
-  border-radius: 30px;
-}
-
-.slider:before {
-  position: absolute;
-  content: "";
-  height: 18px;
-  width: 18px;
-  left: 4px;
-  bottom: 4px;
-  background-color: white;
-  transition: 0.3s;
-  border-radius: 50%;
-}
-
-input:checked + .slider {
-  background-color: var(--accent);
-}
-
-input:checked + .slider:before {
-  transform: translateX(20px);
-}
-
-.highlight-feature {
-  background: linear-gradient(135deg, rgba(37, 211, 102, 0.15), rgba(18, 140, 126, 0.1)) !important;
-  border-color: rgba(37, 211, 102, 0.4);
 }
 
 input[type="time"],
 select {
-  padding: 8px 10px;
-  font-size: 12px;
-  border: 2px solid #dfe7e2;
-  border-radius: 8px;
-  background: white;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--field);
+  font-size: 13px;
 }
 
+.shortcut-input input[type="text"]:focus,
+input[type="time"]:focus,
+select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.shortcut-input input[type="text"]:disabled,
 input[type="time"]:disabled,
 select:disabled {
-  background: #eef2f0;
-  color: #98a4a0;
+  opacity: 0.4;
 }
 
-.memory-bar {
-  width: 120px;
-  height: 18px;
-  background: #e3e9e6;
-  border-radius: 10px;
-  overflow: hidden;
+/* Toggle */
+
+.toggle {
+  position: relative;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 22px;
 }
 
-.memory-bar-fill {
+.toggle input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-dark));
-  width: 0%;
-  transition: width 0.4s ease, background 0.4s ease;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 
-.memory-bar-fill.warning {
-  background: linear-gradient(90deg, #ffc107, #ff9800);
+.slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--off);
+  transition: background-color 0.15s ease;
+  pointer-events: none;
 }
 
-.memory-bar-fill.danger {
-  background: linear-gradient(90deg, #ff5722, #f44336);
+.slider::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
 }
+
+.toggle input:checked + .slider {
+  background: var(--accent);
+}
+
+.toggle input:checked + .slider::before {
+  transform: translateX(16px);
+}
+
+.toggle input:focus-visible + .slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Footer actions */
 
 .button-group {
-  display: flex;
-  gap: 10px;
+  margin: 14px 20px 0;
 }
 
 .btn {
-  flex: 1;
-  padding: 10px 14px;
+  padding: 6px 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
   font-size: 13px;
-  font-weight: 700;
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  font-weight: 500;
+  color: var(--accent);
 }
 
-.btn-primary {
-  background: linear-gradient(135deg, var(--accent), var(--accent-dark));
-  color: white;
-}
-
-.btn-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 8px 18px rgba(37, 211, 102, 0.25);
-}
-
-.btn-secondary {
-  background: #ffffff;
-  border: 2px solid #dfe7e2;
-  color: var(--muted);
-}
-
-.btn-ghost {
-  background: rgba(255, 255, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  color: white;
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.btn-ghost:hover {
-  background: rgba(255, 255, 255, 0.3);
+.btn:hover {
+  text-decoration: underline;
 }
 
 .status-message {
-  text-align: center;
-  padding: 8px;
-  border-radius: 8px;
-  font-weight: 600;
+  margin: 6px 20px 0;
+  font-size: 12.5px;
   opacity: 0;
-  transition: opacity 0.3s ease;
-  font-size: 12px;
+  transition: opacity 0.2s ease;
 }
 
 .status-message.show {
@@ -447,33 +365,9 @@ select:disabled {
 }
 
 .status-message.success {
-  background: #d7f3e2;
-  color: #1c6b3f;
+  color: var(--accent);
 }
 
 .status-message.error {
-  background: #f8d7da;
-  color: #8c1d16;
-}
-
-@media (max-width: 560px) {
-  html,
-  body {
-    width: 360px;
-    height: 600px;
-  }
-
-  .shortcut-item {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .shortcut-input {
-    width: 100%;
-    justify-content: space-between;
-  }
-
-  .button-group {
-    flex-direction: column;
-  }
+  color: var(--error);
 }

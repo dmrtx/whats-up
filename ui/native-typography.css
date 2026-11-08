@@ -6,7 +6,9 @@
   font-family: var(--wa-improver-ui-font) !important;
 }
 
-#app :where(div, span, p, a, label, h1, h2, h3, button, input, textarea):not(:where(pre, pre *, code, code *, kbd, kbd *)) {
+/* Icons are skipped: some are drawn from a font, and a text font would render
+   their private-use code points as unrelated glyphs. */
+#app :where(div, span, p, a, label, h1, h2, h3, button, input, textarea):not(:where(pre, pre *, code, code *, kbd, kbd *, [data-icon], [data-icon] *, [aria-hidden="true"], [aria-hidden="true"] *, svg, svg *)) {
   font-family: var(--wa-improver-ui-font) !important;
   /* WhatsApp forces grayscale antialiasing on individual text elements.
      Let macOS choose its default rendering, especially on 1x displays. */

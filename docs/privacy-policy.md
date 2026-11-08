@@ -10,7 +10,7 @@ The extension runs only on `https://web.whatsapp.com/`. It interacts with the vi
 
 ## Preferences and browser storage
 
-Keyboard shortcuts, navigation preferences and performance settings are stored using Chrome's extension storage. Chrome Sync may synchronize these preferences between the user's browsers when that service is enabled. Display scale and chat-list width are stored locally in the WhatsApp Web browser profile. Temporary memory usage and last-active status are stored locally so the extension dashboard can show whether it is connected.
+Keyboard shortcuts, navigation preferences and performance settings are stored using Chrome's extension storage. Chrome Sync may synchronize these preferences between the user's browsers when that service is enabled. Display scale and chat-list width are stored locally in the WhatsApp Web browser profile. A last-active timestamp is stored locally so the extension dashboard can show whether it is connected.
 
 These stored values do not contain chats, contacts, message contents or login credentials. Removing the extension clears its extension storage; display preferences in WhatsApp Web's local storage can be cleared through that site's browser data settings.
 
