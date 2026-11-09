@@ -203,6 +203,38 @@ test('ArrowUp and ArrowDown navigate with text; Escape returns to the intact dra
   assert.equal(h.sends(), 0);
 });
 
+test('ArrowUp in a multiline draft moves the caret until it reaches the first line', async (t) => {
+  const h = setup(t);
+  await h.advance(0);
+  h.composer.innerHTML = '<p><span>first line</span></p><p><span>second line</span></p>';
+  h.composer.focus();
+  const caretAt = (node, offset) => {
+    const range = h.document.createRange();
+    range.setStart(node, offset);
+    range.collapse(true);
+    const selection = h.window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+  const second = h.composer.querySelectorAll('span')[1];
+
+  caretAt(second.firstChild, 3);
+  const onSecondLine = h.key('ArrowUp');
+  assert.equal(onSecondLine.defaultPrevented, false);
+  assert.equal(h.document.querySelector('.wa-improver-selected-message'), null);
+
+  h.composer.innerHTML = '<p><span>first line<br>after break</span></p>';
+  caretAt(h.composer.querySelector('span').lastChild, 2);
+  assert.equal(h.key('ArrowUp').defaultPrevented, false);
+  assert.equal(h.document.querySelector('.wa-improver-selected-message'), null);
+
+  h.composer.innerHTML = '<p><span>first line</span></p><p><span>second line</span></p>';
+  caretAt(h.composer.querySelector('span').firstChild, 4);
+  const onFirstLine = h.key('ArrowUp');
+  assert.equal(onFirstLine.defaultPrevented, true);
+  assert.equal(h.document.querySelector('.wa-improver-selected-message').dataset.id, 'a-2');
+});
+
 test('Escape cancels a pending action before a slow menu arrives', async (t) => {
   const h = setup(t);
   await h.advance(0);

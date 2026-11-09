@@ -1907,7 +1907,56 @@
     );
   }
 
-  // Plain ArrowUp selects messages even while a draft is being written.
+  function getCaretRect(node, offset) {
+    try {
+      const range = document.createRange();
+      range.setStart(node, offset);
+      range.collapse(true);
+      const rect = Array.from(range.getClientRects?.() || []).find((r) => r.height > 0);
+      if (rect) return rect;
+    } catch (error) {
+      // Fall through to the element box below.
+    }
+
+    // A caret in an empty paragraph (or next to a <br>) has no text rect, so
+    // measure the element it sits in instead.
+    let element = node.nodeType === Node.ELEMENT_NODE ? (node.childNodes[offset] || node) : node.parentElement;
+    if (element && element.nodeType !== Node.ELEMENT_NODE) element = element.parentElement;
+    const rect = element?.getBoundingClientRect?.();
+    return rect && rect.height > 0 ? rect : null;
+  }
+
+  // True when ArrowUp would have nowhere to go inside the draft: the caret
+  // sits on the first line, counting both explicit breaks and soft wraps.
+  function isCaretOnFirstComposerLine(composer) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return true;
+
+    const { focusNode, focusOffset } = selection;
+    if (!focusNode || !composer.contains(focusNode)) return true;
+
+    // Explicit lines: Lexical renders each line as its own <p> (or a <br>).
+    const before = document.createRange();
+    before.setStart(composer, 0);
+    before.setEnd(focusNode, focusOffset);
+    const fragment = before.cloneContents();
+    const blockSelector = 'p, div, li, blockquote, pre';
+    const lineBlocks = Array.from(fragment.querySelectorAll(blockSelector))
+      .filter((block) => !block.querySelector(blockSelector));
+    if (lineBlocks.length > 1 || fragment.querySelector('br') || before.toString().includes('\n')) return false;
+
+    // Soft wraps: compare the caret's line with the composer's first line.
+    const caretRect = getCaretRect(focusNode, focusOffset);
+    const firstText = document.createTreeWalker(composer, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => (node.data.length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
+    }).nextNode();
+    const firstRect = firstText ? getCaretRect(firstText, 0) : getCaretRect(composer, 0);
+    if (!caretRect || !firstRect) return true;
+    return (caretRect.top + caretRect.bottom) / 2 < firstRect.bottom;
+  }
+
+  // Plain ArrowUp selects messages even while a draft is being written, as
+  // long as the caret is on the draft's first line.
   // Alt+ArrowUp remains available elsewhere in the chat.
   function shouldEnterNavigationModeOnArrowUp(event) {
     if (!messageNavigationEnabled) return false;
@@ -1924,7 +1973,9 @@
 
     const composer = getComposerFromTarget(target);
     if (composer) {
-      return true;
+      // In a multiline draft ArrowUp first moves the caret up through the
+      // draft; only from the first line does it continue into the messages.
+      return isCaretOnFirstComposerLine(composer);
     }
 
     if (isTypingTarget(target)) return false;
