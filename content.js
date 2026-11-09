@@ -2347,12 +2347,12 @@
   }
 
   function positionFloatingOptionsButton(button) {
+    // Always take the button out of the page flow: left in <body> as a static
+    // element it becomes a full-width row that pushes the whole app down.
     const sidebarHeader = getSidebarHeader();
-    if (!sidebarHeader) return;
-
-    const rect = sidebarHeader.getBoundingClientRect();
-    const top = Math.max(8, rect.top + 8);
-    const left = Math.max(8, rect.right - 88);
+    const rect = sidebarHeader ? sidebarHeader.getBoundingClientRect() : null;
+    const top = rect ? Math.max(8, rect.top + 8) : 8;
+    const left = rect ? Math.max(8, rect.right - 88) : 8;
 
     button.style.position = 'fixed';
     button.style.top = `${top}px`;
@@ -2548,7 +2548,13 @@
   }
 
   function injectOptionsButton() {
-    if (document.getElementById('wa-improver-options-btn')) return;
+    const existingBtn = document.getElementById('wa-improver-options-btn');
+    if (existingBtn) {
+      // The button fell back to floating while WhatsApp was still rendering its
+      // header; move it into the header as soon as the header exists.
+      if (existingBtn.parentElement !== document.body || !findHeaderActionsRow()) return;
+      existingBtn.remove();
+    }
 
     ensureInjectedUiStyles();
 

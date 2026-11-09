@@ -20,3 +20,4 @@ screenshots/
 test-results/
 playwright-report/
 coverage/
+dist/
